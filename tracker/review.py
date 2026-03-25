@@ -12,7 +12,9 @@ from tracker.db import (
     apply_rules_to_uncategorized,
     bulk_update_categories,
     create_category,
+    create_sub_category,
     delete_category,
+    delete_sub_category,
     get_all_events,
     get_known_categories,
     get_known_sub_categories,
@@ -21,6 +23,7 @@ from tracker.db import (
     insert_rule,
     delete_rule,
     rename_category,
+    rename_sub_category,
     update_event_category,
 )
 
@@ -50,6 +53,7 @@ class FilterableCombobox(tk.Frame):
         self._on_change = on_change
         self._placeholder = placeholder
 
+        self._suppress = False
         self._var = tk.StringVar()
         self._var.trace_add("write", self._on_type)
 
@@ -72,7 +76,9 @@ class FilterableCombobox(tk.Frame):
         return self._var.get().strip()
 
     def set(self, value: str) -> None:
+        self._suppress = True
         self._var.set(value or "")
+        self._suppress = False
 
     def set_options(self, options: list[str]) -> None:
         self._all_options = list(options)
@@ -84,7 +90,8 @@ class FilterableCombobox(tk.Frame):
     # ------------------------------------------------------------------
 
     def _on_type(self, *_) -> None:
-        self._show_popup()
+        if not self._suppress:
+            self._show_popup()
 
     def _show_popup(self, event=None) -> None:
         text = self._var.get()
@@ -164,7 +171,9 @@ class FilterableCombobox(tk.Frame):
             if value not in self._all_options:
                 self._all_options.append(value)
                 self._all_options.sort()
+        self._suppress = True
         self._var.set(value)
+        self._suppress = False
         self._hide_popup()
         self._commit()
 
@@ -638,140 +647,205 @@ class RulesTab(tk.Frame):
 # ---------------------------------------------------------------------------
 
 class CategoriesTab(tk.Frame):
-    """Create, rename, and delete categories. Changes apply to all associated events."""
+    """
+    Manage categories and sub-categories.
+    Tree shows categories (bold) with their sub-categories as children.
+    Selecting a category or sub-category activates the rename/delete form.
+    """
+
+    # iid prefixes to distinguish rows
+    _CAT = "C|||"
+    _SUB = "S|||"
 
     def __init__(self, parent: tk.Widget, conn: sqlite3.Connection) -> None:
         super().__init__(parent)
         self._conn = conn
+        self._sel_category: str | None = None
+        self._sel_sub: str | None = None
         self._build()
         self.refresh()
 
     def _build(self) -> None:
-        # --- Create form ---
-        create_frame = tk.LabelFrame(self, text="Create Category", padx=8, pady=6)
-        create_frame.pack(fill="x", padx=8, pady=(8, 4))
+        # --- Top: create forms ---
+        top = tk.Frame(self)
+        top.pack(fill="x", padx=8, pady=(8, 4))
 
-        tk.Label(create_frame, text="Name:").pack(side="left")
-        self._new_var = tk.StringVar()
-        tk.Entry(create_frame, textvariable=self._new_var, width=30).pack(side="left", padx=6)
-        tk.Button(create_frame, text="Create", command=self._create).pack(side="left")
+        cat_frame = tk.LabelFrame(top, text="New Category", padx=8, pady=6)
+        cat_frame.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self._new_cat_var = tk.StringVar()
+        tk.Entry(cat_frame, textvariable=self._new_cat_var, width=22).pack(side="left", padx=(0, 6))
+        tk.Button(cat_frame, text="Create", command=self._create_category).pack(side="left")
 
-        # --- Rename / delete form ---
-        edit_frame = tk.LabelFrame(self, text="Rename / Delete selected", padx=8, pady=6)
-        edit_frame.pack(fill="x", padx=8, pady=4)
+        sub_frame = tk.LabelFrame(top, text="New Sub-category  (select a category first)", padx=8, pady=6)
+        sub_frame.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self._new_sub_var = tk.StringVar()
+        tk.Entry(sub_frame, textvariable=self._new_sub_var, width=22).pack(side="left", padx=(0, 6))
+        tk.Button(sub_frame, text="Create", command=self._create_sub_category).pack(side="left")
 
-        tk.Label(edit_frame, text="New name:").grid(row=0, column=0, sticky="w", padx=(0, 4))
-        self._rename_var = tk.StringVar()
-        tk.Entry(edit_frame, textvariable=self._rename_var, width=30).grid(
-            row=0, column=1, sticky="ew", padx=(0, 8)
-        )
-        tk.Button(edit_frame, text="Rename", command=self._rename).grid(
-            row=0, column=2, padx=(0, 4)
-        )
-        tk.Button(edit_frame, text="Delete", fg="#cc3333", command=self._delete).grid(
-            row=0, column=3
-        )
-        self._status_var = tk.StringVar()
-        tk.Label(edit_frame, textvariable=self._status_var, fg="#555555").grid(
-            row=0, column=4, padx=(12, 0), sticky="w"
-        )
-        edit_frame.columnconfigure(1, weight=1)
-
-        # --- Treeview ---
+        # --- Middle: tree ---
         tree_frame = tk.Frame(self)
-        tree_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        tree_frame.pack(fill="both", expand=True, padx=8, pady=4)
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
         self._tree = ttk.Treeview(
             tree_frame,
-            columns=("name", "event_count"),
-            show="headings",
+            columns=("events",),
+            show="tree headings",
             yscrollcommand=vsb.set,
             selectmode="browse",
         )
         vsb.config(command=self._tree.yview)
-
-        self._tree.heading("name", text="Category")
-        self._tree.heading("event_count", text="Events")
-        self._tree.column("name", width=260, minwidth=100)
-        self._tree.column("event_count", width=80, minwidth=60, anchor="center")
-
+        self._tree.heading("#0", text="Name")
+        self._tree.heading("events", text="Events")
+        self._tree.column("#0", width=300, minwidth=120, stretch=True)
+        self._tree.column("events", width=70, minwidth=50, anchor="center", stretch=False)
         self._tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
-
+        self._tree.tag_configure("category", font=("TkDefaultFont", 10, "bold"))
         self._tree.bind("<<TreeviewSelect>>", self._on_select)
+
+        # --- Bottom: edit panel ---
+        edit = tk.LabelFrame(self, text="Rename / Delete selected", padx=8, pady=6)
+        edit.pack(fill="x", padx=8, pady=(0, 8))
+
+        tk.Label(edit, text="New name:").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        self._edit_var = tk.StringVar()
+        tk.Entry(edit, textvariable=self._edit_var, width=28).grid(
+            row=0, column=1, sticky="ew", padx=(0, 8)
+        )
+        tk.Button(edit, text="Rename", command=self._rename).grid(row=0, column=2, padx=(0, 4))
+        tk.Button(edit, text="Delete", fg="#cc3333", command=self._delete).grid(row=0, column=3)
+        self._status_var = tk.StringVar()
+        tk.Label(edit, textvariable=self._status_var, fg="#555555").grid(
+            row=0, column=4, padx=(12, 0), sticky="w"
+        )
+        edit.columnconfigure(1, weight=1)
 
     # ------------------------------------------------------------------
 
     def refresh(self) -> None:
         self._tree.delete(*self._tree.get_children())
-        rows = self._conn.execute(
-            """
-            SELECT c.name, COUNT(e.id) AS cnt
-            FROM (
-                SELECT name FROM categories
-                UNION
-                SELECT category AS name FROM window_events WHERE category IS NOT NULL
-            ) c
-            LEFT JOIN window_events e ON e.category = c.name
-            GROUP BY c.name
-            ORDER BY c.name
-            """
-        ).fetchall()
-        for name, count in rows:
-            self._tree.insert("", "end", iid=name, values=(name, count))
+        for cat in get_known_categories(self._conn):
+            cat_count = self._conn.execute(
+                "SELECT COUNT(*) FROM window_events WHERE category = ?", (cat,)
+            ).fetchone()[0]
+            self._tree.insert(
+                "", "end",
+                iid=f"{self._CAT}{cat}",
+                text=cat,
+                values=(cat_count,),
+                tags=("category",),
+                open=True,
+            )
+            for sub in get_known_sub_categories(self._conn, cat):
+                sub_count = self._conn.execute(
+                    "SELECT COUNT(*) FROM window_events WHERE category = ? AND sub_category = ?",
+                    (cat, sub),
+                ).fetchone()[0]
+                self._tree.insert(
+                    f"{self._CAT}{cat}", "end",
+                    iid=f"{self._SUB}{cat}|||{sub}",
+                    text=sub,
+                    values=(sub_count,),
+                )
 
     def _on_select(self, event=None) -> None:
         sel = self._tree.selection()
-        if sel:
-            self._rename_var.set(sel[0])
-            self._status_var.set("")
+        self._status_var.set("")
+        if not sel:
+            self._sel_category = None
+            self._sel_sub = None
+            return
+        iid = sel[0]
+        if iid.startswith(self._CAT):
+            self._sel_category = iid[len(self._CAT):]
+            self._sel_sub = None
+            self._edit_var.set(self._sel_category)
+        elif iid.startswith(self._SUB):
+            rest = iid[len(self._SUB):]
+            cat, sub = rest.split("|||", 1)
+            self._sel_category = cat
+            self._sel_sub = sub
+            self._edit_var.set(sub)
 
-    def _create(self) -> None:
-        name = self._new_var.get().strip()
+    def _create_category(self) -> None:
+        name = self._new_cat_var.get().strip()
         if not name:
             return
         create_category(self._conn, name)
-        self._new_var.set("")
-        self._status_var.set("")
+        self._new_cat_var.set("")
+        self._status_var.set(f'Created "{name}".')
+        self.refresh()
+
+    def _create_sub_category(self) -> None:
+        if not self._sel_category:
+            self._status_var.set("Select a category from the list first.")
+            return
+        name = self._new_sub_var.get().strip()
+        if not name:
+            return
+        create_sub_category(self._conn, self._sel_category, name)
+        self._new_sub_var.set("")
+        self._status_var.set(f'Created sub-category "{name}" under "{self._sel_category}".')
         self.refresh()
 
     def _rename(self) -> None:
-        sel = self._tree.selection()
-        if not sel:
-            self._status_var.set("Select a category first.")
-            return
-        old = sel[0]
-        new = self._rename_var.get().strip()
-        if not new:
+        new_name = self._edit_var.get().strip()
+        if not new_name:
             self._status_var.set("Enter a new name.")
             return
-        if new == old:
-            self._status_var.set("Name is unchanged.")
+        if self._sel_sub is not None:
+            if new_name == self._sel_sub:
+                self._status_var.set("Name is unchanged.")
+                return
+            rename_sub_category(self._conn, self._sel_category, self._sel_sub, new_name)
+            self._status_var.set(f'Renamed "{self._sel_sub}" → "{new_name}".')
+        elif self._sel_category is not None:
+            if new_name == self._sel_category:
+                self._status_var.set("Name is unchanged.")
+                return
+            rename_category(self._conn, self._sel_category, new_name)
+            self._status_var.set(f'Renamed "{self._sel_category}" → "{new_name}".')
+        else:
+            self._status_var.set("Select an item first.")
             return
-        rename_category(self._conn, old, new)
-        self._rename_var.set("")
-        self._status_var.set(f'Renamed "{old}" → "{new}".')
+        self._edit_var.set("")
+        self._sel_category = None
+        self._sel_sub = None
         self.refresh()
 
     def _delete(self) -> None:
-        sel = self._tree.selection()
-        if not sel:
-            self._status_var.set("Select a category first.")
+        if self._sel_sub is not None:
+            count = self._conn.execute(
+                "SELECT COUNT(*) FROM window_events WHERE category = ? AND sub_category = ?",
+                (self._sel_category, self._sel_sub),
+            ).fetchone()[0]
+            msg = (
+                f'Delete sub-category "{self._sel_sub}" under "{self._sel_category}"?\n\n'
+                f'This will clear the sub-category from {count} event(s).'
+            )
+            if not messagebox.askyesno("Delete sub-category", msg, icon="warning"):
+                return
+            delete_sub_category(self._conn, self._sel_category, self._sel_sub)
+            self._status_var.set(f'Deleted sub-category "{self._sel_sub}".')
+        elif self._sel_category is not None:
+            count = self._conn.execute(
+                "SELECT COUNT(*) FROM window_events WHERE category = ?", (self._sel_category,)
+            ).fetchone()[0]
+            msg = (
+                f'Delete "{self._sel_category}"?\n\n'
+                f'This will clear the category from {count} event(s) and cannot be undone.'
+            )
+            if not messagebox.askyesno("Delete category", msg, icon="warning"):
+                return
+            delete_category(self._conn, self._sel_category)
+            self._status_var.set(f'Deleted "{self._sel_category}".')
+        else:
+            self._status_var.set("Select an item first.")
             return
-        name = sel[0]
-        count = self._conn.execute(
-            "SELECT COUNT(*) FROM window_events WHERE category = ?", (name,)
-        ).fetchone()[0]
-        msg = (
-            f'Delete "{name}"?\n\n'
-            f"This will clear the category from {count} event(s) and cannot be undone."
-        )
-        if not messagebox.askyesno("Delete category", msg, icon="warning"):
-            return
-        delete_category(self._conn, name)
-        self._rename_var.set("")
-        self._status_var.set(f'Deleted "{name}".')
+        self._edit_var.set("")
+        self._sel_category = None
+        self._sel_sub = None
         self.refresh()

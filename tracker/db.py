@@ -31,6 +31,14 @@ CREATE TABLE IF NOT EXISTS categories (
 );
 """
 
+SCHEMA_SUB_CATEGORIES = """
+CREATE TABLE IF NOT EXISTS sub_categories (
+    category TEXT NOT NULL,
+    name     TEXT NOT NULL,
+    PRIMARY KEY (category, name)
+);
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE window_events ADD COLUMN category TEXT;",
     "ALTER TABLE window_events ADD COLUMN sub_category TEXT;",
@@ -42,6 +50,7 @@ def open_db(path: Path) -> sqlite3.Connection:
     conn.execute(SCHEMA)
     conn.execute(SCHEMA_RULES)
     conn.execute(SCHEMA_CATEGORIES)
+    conn.execute(SCHEMA_SUB_CATEGORIES)
     conn.commit()
     _migrate(conn)
     return conn
@@ -109,14 +118,25 @@ def get_known_categories(conn: sqlite3.Connection) -> list[str]:
 def get_known_sub_categories(conn: sqlite3.Connection, category: str | None = None) -> list[str]:
     if category:
         cur = conn.execute(
-            "SELECT DISTINCT sub_category FROM window_events "
-            "WHERE sub_category IS NOT NULL AND category = ? ORDER BY sub_category",
-            (category,),
+            """
+            SELECT DISTINCT name FROM (
+                SELECT name FROM sub_categories WHERE category = ?
+                UNION
+                SELECT sub_category AS name FROM window_events
+                WHERE sub_category IS NOT NULL AND category = ?
+            ) ORDER BY name
+            """,
+            (category, category),
         )
     else:
         cur = conn.execute(
-            "SELECT DISTINCT sub_category FROM window_events "
-            "WHERE sub_category IS NOT NULL ORDER BY sub_category"
+            """
+            SELECT DISTINCT name FROM (
+                SELECT name FROM sub_categories
+                UNION
+                SELECT sub_category AS name FROM window_events WHERE sub_category IS NOT NULL
+            ) ORDER BY name
+            """
         )
     return [row[0] for row in cur.fetchall()]
 
@@ -147,6 +167,40 @@ def delete_category(conn: sqlite3.Connection, name: str) -> None:
         (name,),
     )
     conn.execute("DELETE FROM categories WHERE name = ?", (name,))
+    conn.commit()
+
+
+def create_sub_category(conn: sqlite3.Connection, category: str, name: str) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO sub_categories (category, name) VALUES (?, ?)", (category, name)
+    )
+    conn.commit()
+
+
+def rename_sub_category(
+    conn: sqlite3.Connection, category: str, old_name: str, new_name: str
+) -> None:
+    conn.execute(
+        "UPDATE window_events SET sub_category = ? WHERE category = ? AND sub_category = ?",
+        (new_name, category, old_name),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO sub_categories (category, name) VALUES (?, ?)", (category, new_name)
+    )
+    conn.execute(
+        "DELETE FROM sub_categories WHERE category = ? AND name = ?", (category, old_name)
+    )
+    conn.commit()
+
+
+def delete_sub_category(conn: sqlite3.Connection, category: str, name: str) -> None:
+    conn.execute(
+        "UPDATE window_events SET sub_category = NULL WHERE category = ? AND sub_category = ?",
+        (category, name),
+    )
+    conn.execute(
+        "DELETE FROM sub_categories WHERE category = ? AND name = ?", (category, name)
+    )
     conn.commit()
 
 

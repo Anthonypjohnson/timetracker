@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable
 
-from tracker.db import insert_event
+from tracker.db import insert_event, auto_categorize_event
 from tracker.models import WindowEvent
 
 logger = logging.getLogger(__name__)
@@ -126,7 +126,8 @@ class Watcher:
             started_at=started_at,
             duration_seconds=duration,
         )
-        insert_event(self._conn, event)
+        event_id = insert_event(self._conn, event)
+        auto_categorize_event(self._conn, event_id, app, title)
         logger.debug("Logged: %s — %s (%ds)", app, title, duration)
         if self._on_event:
             self._on_event(event)

@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 from tracker.db import get_uncategorized_count
 from tracker.models import WindowEvent
-from tracker.review import EventsTab, SummaryTab
+from tracker.review import EventsTab, SummaryTab, RulesTab, CategoriesTab
 from tracker.watcher import Watcher, get_active_window
 
 _LIVE_POLL_MS = 1000  # how often the GUI refreshes the active-window display
@@ -145,9 +145,13 @@ class MainApp(tk.Tk):
 
         self._events_tab = EventsTab(self._notebook, self._conn)
         self._summary_tab = SummaryTab(self._notebook, self._conn)
+        self._rules_tab = RulesTab(self._notebook, self._conn)
+        self._categories_tab = CategoriesTab(self._notebook, self._conn)
 
         self._notebook.add(self._events_tab, text="  Review  ")
         self._notebook.add(self._summary_tab, text="  Summary  ")
+        self._notebook.add(self._rules_tab, text="  Rules  ")
+        self._notebook.add(self._categories_tab, text="  Categories  ")
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_change)
 
         self._update_review_tab_label()
@@ -205,6 +209,10 @@ class MainApp(tk.Tk):
         elif "Review" in tab:
             self._events_tab.refresh()
             self._update_review_tab_label()
+        elif "Rules" in tab:
+            self._rules_tab.refresh()
+        elif "Categories" in tab:
+            self._categories_tab.refresh()
 
     # ------------------------------------------------------------------
     # Clean shutdown

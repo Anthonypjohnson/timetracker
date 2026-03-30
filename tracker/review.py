@@ -560,9 +560,8 @@ class SummaryTab(ttk.Frame):
 class RulesTab(ttk.Frame):
     """Manage auto-categorization rules and apply them to existing events."""
 
-    _COLS = ("field", "pattern", "category", "sub_category")
-    _HEADERS = ("Field", "Pattern", "Category", "Sub-category")
-    _FIELD_OPTIONS = ["app_name", "window_title"]
+    _COLS = ("app_name_pattern", "window_title_pattern", "category", "sub_category", "priority")
+    _HEADERS = ("App Pattern", "Title Pattern", "Category", "Sub-category", "Priority")
 
     def __init__(self, parent: tk.Widget, conn: sqlite3.Connection) -> None:
         super().__init__(parent)
@@ -575,16 +574,16 @@ class RulesTab(ttk.Frame):
         form = ttk.LabelFrame(self, text="Add Rule", padding=(8, 6))
         form.pack(fill="x", padx=8, pady=(8, 4))
 
-        ttk.Label(form, text="Field:").grid(row=0, column=0, sticky="w", padx=(0, 4))
-        self._field_var = tk.StringVar(value="app_name")
-        ttk.Combobox(
-            form, textvariable=self._field_var, values=self._FIELD_OPTIONS,
-            state="readonly", width=14,
-        ).grid(row=0, column=1, sticky="ew", padx=(0, 12))
+        # Row 0: App Pattern + Title Pattern
+        ttk.Label(form, text="App Pattern:").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        self._app_pattern_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self._app_pattern_var, width=22).grid(
+            row=0, column=1, sticky="ew", padx=(0, 12)
+        )
 
-        ttk.Label(form, text="Pattern:").grid(row=0, column=2, sticky="w", padx=(0, 4))
-        self._pattern_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self._pattern_var, width=22).grid(
+        ttk.Label(form, text="Title Pattern:").grid(row=0, column=2, sticky="w", padx=(0, 4))
+        self._title_pattern_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self._title_pattern_var, width=22).grid(
             row=0, column=3, sticky="ew", padx=(0, 12)
         )
 
@@ -596,10 +595,21 @@ class RulesTab(ttk.Frame):
         self._sub_box = FilterableCombobox(form, options=[], width=18)
         self._sub_box.grid(row=0, column=7, sticky="ew", padx=(0, 12))
 
-        ttk.Button(form, text="Add Rule", command=self._add_rule,
-                   style="Accent.TButton").grid(row=0, column=8)
+        ttk.Label(form, text="Priority:").grid(row=0, column=8, sticky="w", padx=(0, 4))
+        self._priority_var = tk.IntVar(value=0)
+        ttk.Spinbox(
+            form, textvariable=self._priority_var, from_=0, to=9999, width=6
+        ).grid(row=0, column=9, sticky="ew", padx=(0, 12))
 
-        for col in (3, 5, 7):
+        ttk.Button(form, text="Add Rule", command=self._add_rule,
+                   style="Accent.TButton").grid(row=0, column=10)
+
+        ttk.Label(
+            form, text="Leave a pattern blank to match any value for that field.",
+            foreground=_SUBTEXT,
+        ).grid(row=1, column=0, columnspan=11, sticky="w", pady=(4, 0))
+
+        for col in (1, 3, 5, 7):
             form.columnconfigure(col, weight=1)
 
         # --- Toolbar ---
@@ -630,10 +640,11 @@ class RulesTab(ttk.Frame):
         )
         vsb.config(command=self._tree.yview)
 
-        widths = (110, 220, 160, 160)
+        widths = (160, 200, 140, 140, 70)
         for col, header, width in zip(self._COLS, self._HEADERS, widths):
             self._tree.heading(col, text=header)
-            self._tree.column(col, width=width, minwidth=60)
+            self._tree.column(col, width=width, minwidth=50)
+        self._tree.column("priority", anchor="center")
 
         self._tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
@@ -653,25 +664,35 @@ class RulesTab(ttk.Frame):
                 "", "end",
                 iid=str(rule["id"]),
                 values=(
-                    rule["field"],
-                    rule["pattern"],
+                    rule["app_name_pattern"] or "",
+                    rule["window_title_pattern"] or "",
                     rule["category"],
                     rule["sub_category"] or "",
+                    rule["priority"],
                 ),
             )
 
     def _add_rule(self) -> None:
-        field = self._field_var.get().strip()
-        pattern = self._pattern_var.get().strip()
+        app_pat = self._app_pattern_var.get().strip() or None
+        title_pat = self._title_pattern_var.get().strip() or None
         cat = self._cat_box.get()
         sub = self._sub_box.get() or None
-        if not pattern or not cat:
-            self._status_var.set("Pattern and category are required.")
+        try:
+            priority = int(self._priority_var.get())
+        except (ValueError, tk.TclError):
+            priority = 0
+        if not app_pat and not title_pat:
+            self._status_var.set("At least one pattern (App or Title) is required.")
             return
-        insert_rule(self._conn, field, pattern, cat, sub)
-        self._pattern_var.set("")
+        if not cat:
+            self._status_var.set("Category is required.")
+            return
+        insert_rule(self._conn, app_pat, title_pat, cat, sub, priority)
+        self._app_pattern_var.set("")
+        self._title_pattern_var.set("")
         self._cat_box.set("")
         self._sub_box.set("")
+        self._priority_var.set(0)
         self._status_var.set("")
         self.refresh()
 

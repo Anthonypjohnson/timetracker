@@ -17,11 +17,12 @@ CREATE TABLE IF NOT EXISTS window_events (
 
 SCHEMA_RULES = """
 CREATE TABLE IF NOT EXISTS category_rules (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    field        TEXT NOT NULL,
-    pattern      TEXT NOT NULL,
-    category     TEXT NOT NULL,
-    sub_category TEXT
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_name_pattern     TEXT,
+    window_title_pattern TEXT,
+    category             TEXT NOT NULL,
+    sub_category         TEXT,
+    priority             INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -44,6 +45,12 @@ _MIGRATIONS = [
     "ALTER TABLE window_events ADD COLUMN sub_category TEXT;",
 ]
 
+_RULE_MIGRATIONS = [
+    ("app_name_pattern", "ALTER TABLE category_rules ADD COLUMN app_name_pattern TEXT;"),
+    ("window_title_pattern", "ALTER TABLE category_rules ADD COLUMN window_title_pattern TEXT;"),
+    ("priority", "ALTER TABLE category_rules ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;"),
+]
+
 
 def open_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), check_same_thread=False)
@@ -63,6 +70,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
         col = stmt.split("ADD COLUMN")[1].split()[0]
         if col not in existing:
             conn.execute(stmt)
+
+    rule_cols = {row[1] for row in conn.execute("PRAGMA table_info(category_rules)")}
+    # One-time data migration: copy old field/pattern to new split columns
+    needs_data_migration = "field" in rule_cols and "app_name_pattern" not in rule_cols
+    for col, stmt in _RULE_MIGRATIONS:
+        if col not in rule_cols:
+            conn.execute(stmt)
+    if needs_data_migration:
+        conn.execute(
+            "UPDATE category_rules SET app_name_pattern = pattern WHERE field = 'app_name'"
+        )
+        conn.execute(
+            "UPDATE category_rules SET window_title_pattern = pattern WHERE field = 'window_title'"
+        )
+
     conn.commit()
 
 
@@ -232,7 +254,8 @@ def bulk_update_categories(
 
 def get_rules(conn: sqlite3.Connection) -> list[dict]:
     cur = conn.execute(
-        "SELECT id, field, pattern, category, sub_category FROM category_rules ORDER BY id"
+        "SELECT id, app_name_pattern, window_title_pattern, category, sub_category, priority"
+        " FROM category_rules ORDER BY priority DESC, id ASC"
     )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -240,14 +263,17 @@ def get_rules(conn: sqlite3.Connection) -> list[dict]:
 
 def insert_rule(
     conn: sqlite3.Connection,
-    field: str,
-    pattern: str,
+    app_name_pattern: str | None,
+    window_title_pattern: str | None,
     category: str,
     sub_category: str | None,
+    priority: int = 0,
 ) -> None:
     conn.execute(
-        "INSERT INTO category_rules (field, pattern, category, sub_category) VALUES (?, ?, ?, ?)",
-        (field, pattern, category, sub_category or None),
+        "INSERT INTO category_rules"
+        " (app_name_pattern, window_title_pattern, category, sub_category, priority)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (app_name_pattern or None, window_title_pattern or None, category, sub_category or None, priority),
     )
     conn.commit()
 
@@ -257,13 +283,25 @@ def delete_rule(conn: sqlite3.Connection, rule_id: int) -> None:
     conn.commit()
 
 
+def _rule_matches(rule: dict, app_name: str, window_title: str) -> bool:
+    """Return True if all non-null patterns in the rule match the given fields."""
+    app_pat = rule["app_name_pattern"]
+    title_pat = rule["window_title_pattern"]
+    if not app_pat and not title_pat:
+        return False
+    if app_pat and app_pat.lower() not in app_name.lower():
+        return False
+    if title_pat and title_pat.lower() not in window_title.lower():
+        return False
+    return True
+
+
 def auto_categorize_event(
     conn: sqlite3.Connection, event_id: int, app_name: str, window_title: str
 ) -> bool:
-    """Apply the first matching rule to a single event. Returns True if a rule matched."""
-    for rule in get_rules(conn):
-        value = app_name if rule["field"] == "app_name" else window_title
-        if rule["pattern"].lower() in value.lower():
+    """Apply the highest-priority matching rule to a single event. Returns True if matched."""
+    for rule in get_rules(conn):  # already sorted by priority DESC
+        if _rule_matches(rule, app_name, window_title):
             update_event_category(conn, event_id, rule["category"], rule["sub_category"])
             return True
     return False
@@ -271,7 +309,7 @@ def auto_categorize_event(
 
 def apply_rules_to_uncategorized(conn: sqlite3.Connection) -> int:
     """Apply rules to every uncategorized event. Returns the number newly categorized."""
-    rules = get_rules(conn)
+    rules = get_rules(conn)  # already sorted by priority DESC
     if not rules:
         return 0
     rows = conn.execute(
@@ -280,8 +318,7 @@ def apply_rules_to_uncategorized(conn: sqlite3.Connection) -> int:
     count = 0
     for event_id, app_name, window_title in rows:
         for rule in rules:
-            value = app_name if rule["field"] == "app_name" else window_title
-            if rule["pattern"].lower() in value.lower():
+            if _rule_matches(rule, app_name, window_title):
                 update_event_category(conn, event_id, rule["category"], rule["sub_category"])
                 count += 1
                 break

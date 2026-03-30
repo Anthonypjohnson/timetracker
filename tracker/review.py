@@ -16,6 +16,7 @@ from tracker.db import (
     delete_category,
     delete_sub_category,
     get_all_events,
+    get_event_dates,
     get_known_categories,
     get_known_sub_categories,
     get_rules,
@@ -236,6 +237,14 @@ class EventsTab(tk.Frame):
         toolbar = tk.Frame(self, pady=4)
         toolbar.pack(fill="x", padx=8)
 
+        tk.Label(toolbar, text="Day:").pack(side="left")
+        self._date_var = tk.StringVar(value="All")
+        self._date_cb = ttk.Combobox(
+            toolbar, textvariable=self._date_var, state="readonly", width=12
+        )
+        self._date_cb.pack(side="left", padx=(2, 8))
+        self._date_cb.bind("<<ComboboxSelected>>", lambda *_: self.refresh())
+
         tk.Label(toolbar, text="Filter:").pack(side="left")
         self._filter_var = tk.StringVar()
         self._filter_var.trace_add("write", lambda *_: self._apply_filter())
@@ -309,7 +318,15 @@ class EventsTab(tk.Frame):
     # ------------------------------------------------------------------
 
     def refresh(self) -> None:
-        self._events = get_all_events(self._conn)
+        # Update date picker options
+        dates = get_event_dates(self._conn)
+        self._date_cb["values"] = ["All"] + dates
+        selected = self._date_var.get()
+        if selected not in ("All",) + tuple(dates):
+            self._date_var.set("All")
+
+        date_filter = self._date_var.get()
+        self._events = get_all_events(self._conn, date_filter if date_filter != "All" else None)
         # Re-overlay any pending (unsaved) changes onto the local cache
         for ev in self._events:
             if ev["id"] in self._pending:
@@ -452,6 +469,15 @@ class SummaryTab(tk.Frame):
     def _build(self) -> None:
         toolbar = tk.Frame(self, pady=4)
         toolbar.pack(fill="x", padx=8)
+
+        tk.Label(toolbar, text="Day:").pack(side="left")
+        self._date_var = tk.StringVar(value="All")
+        self._date_cb = ttk.Combobox(
+            toolbar, textvariable=self._date_var, state="readonly", width=12
+        )
+        self._date_cb.pack(side="left", padx=(2, 8))
+        self._date_cb.bind("<<ComboboxSelected>>", lambda *_: self.refresh())
+
         tk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
 
         tree_frame = tk.Frame(self)
@@ -482,7 +508,13 @@ class SummaryTab(tk.Frame):
 
     def refresh(self) -> None:
         self._tree.delete(*self._tree.get_children())
-        rows = get_summary(self._conn)
+        dates = get_event_dates(self._conn)
+        self._date_cb["values"] = ["All"] + dates
+        selected = self._date_var.get()
+        if selected not in ("All",) + tuple(dates):
+            self._date_var.set("All")
+        date_filter = self._date_var.get()
+        rows = get_summary(self._conn, date_filter if date_filter != "All" else None)
 
         from itertools import groupby
         for cat, group in groupby(rows, key=lambda r: r["category"]):

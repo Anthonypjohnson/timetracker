@@ -93,11 +93,26 @@ def update_event_category(
     conn.commit()
 
 
-def get_all_events(conn: sqlite3.Connection) -> list[dict]:
+def get_event_dates(conn: sqlite3.Connection) -> list[str]:
+    """Return distinct calendar dates (YYYY-MM-DD) that have events, newest first."""
     cur = conn.execute(
-        "SELECT id, app_name, window_title, started_at, duration_seconds, category, sub_category "
-        "FROM window_events ORDER BY started_at DESC"
+        "SELECT DISTINCT DATE(started_at) AS d FROM window_events ORDER BY d DESC"
     )
+    return [row[0] for row in cur.fetchall()]
+
+
+def get_all_events(conn: sqlite3.Connection, date: str | None = None) -> list[dict]:
+    if date:
+        cur = conn.execute(
+            "SELECT id, app_name, window_title, started_at, duration_seconds, category, sub_category "
+            "FROM window_events WHERE DATE(started_at) = ? ORDER BY started_at DESC",
+            (date,),
+        )
+    else:
+        cur = conn.execute(
+            "SELECT id, app_name, window_title, started_at, duration_seconds, category, sub_category "
+            "FROM window_events ORDER BY started_at DESC"
+        )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
@@ -273,18 +288,34 @@ def apply_rules_to_uncategorized(conn: sqlite3.Connection) -> int:
     return count
 
 
-def get_summary(conn: sqlite3.Connection) -> list[dict]:
-    cur = conn.execute(
-        """
-        SELECT
-            COALESCE(category, '(Uncategorized)') AS category,
-            COALESCE(sub_category, '')             AS sub_category,
-            SUM(duration_seconds)                  AS total_seconds,
-            COUNT(*)                               AS event_count
-        FROM window_events
-        GROUP BY category, sub_category
-        ORDER BY total_seconds DESC
-        """
-    )
+def get_summary(conn: sqlite3.Connection, date: str | None = None) -> list[dict]:
+    if date:
+        cur = conn.execute(
+            """
+            SELECT
+                COALESCE(category, '(Uncategorized)') AS category,
+                COALESCE(sub_category, '')             AS sub_category,
+                SUM(duration_seconds)                  AS total_seconds,
+                COUNT(*)                               AS event_count
+            FROM window_events
+            WHERE DATE(started_at) = ?
+            GROUP BY category, sub_category
+            ORDER BY total_seconds DESC
+            """,
+            (date,),
+        )
+    else:
+        cur = conn.execute(
+            """
+            SELECT
+                COALESCE(category, '(Uncategorized)') AS category,
+                COALESCE(sub_category, '')             AS sub_category,
+                SUM(duration_seconds)                  AS total_seconds,
+                COUNT(*)                               AS event_count
+            FROM window_events
+            GROUP BY category, sub_category
+            ORDER BY total_seconds DESC
+            """
+        )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]

@@ -18,6 +18,7 @@ Window layout:
 import sqlite3
 import sys
 import tkinter as tk
+from typing import Callable
 from tkinter import messagebox, ttk
 from datetime import datetime, timezone
 
@@ -59,9 +60,9 @@ class StatusBar(tk.Frame):
     def __init__(
         self,
         parent: tk.Widget,
-        on_toggle: callable,
+        on_toggle: Callable,
         autostart_value: bool = False,
-        on_autostart_change: callable | None = None,
+        on_autostart_change: Callable | None = None,
     ) -> None:
         super().__init__(parent, bg=_STATUS_BG, padx=12, pady=9)
 

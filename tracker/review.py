@@ -28,12 +28,15 @@ from tracker.db import (
     update_event_category,
 )
 
+_SUBTEXT = "#6b7280"
+_DANGER = "#dc2626"
+
 
 # ---------------------------------------------------------------------------
 # Filterable combobox
 # ---------------------------------------------------------------------------
 
-class FilterableCombobox(tk.Frame):
+class FilterableCombobox(ttk.Frame):
     """
     Entry + popup Listbox that filters as the user types.
     Selecting an option that doesn't exist in the list adds it as a new entry.
@@ -58,7 +61,7 @@ class FilterableCombobox(tk.Frame):
         self._var = tk.StringVar()
         self._var.trace_add("write", self._on_type)
 
-        self._entry = tk.Entry(self, textvariable=self._var)
+        self._entry = ttk.Entry(self, textvariable=self._var)
         self._entry.pack(fill="x")
         self._entry.bind("<FocusIn>", self._show_popup)
         self._entry.bind("<FocusOut>", self._on_focus_out)
@@ -103,16 +106,24 @@ class FilterableCombobox(tk.Frame):
             self._popup.wm_overrideredirect(True)
             self._popup.wm_attributes("-topmost", True)
 
-            frame = tk.Frame(self._popup, bd=1, relief="solid")
+            frame = tk.Frame(self._popup, bd=1, relief="solid", bg="#d1d5db")
             frame.pack(fill="both", expand=True)
 
-            scrollbar = tk.Scrollbar(frame, orient="vertical")
+            scrollbar = ttk.Scrollbar(frame, orient="vertical")
             self._listbox = tk.Listbox(
                 frame,
                 yscrollcommand=scrollbar.set,
                 selectmode="single",
-                activestyle="dotbox",
+                activestyle="none",
                 height=8,
+                font=("Segoe UI", 9),
+                bg="#ffffff",
+                fg="#1a1a1a",
+                selectbackground="#dbeafe",
+                selectforeground="#1a1a1a",
+                borderwidth=0,
+                relief="flat",
+                highlightthickness=0,
             )
             scrollbar.config(command=self._listbox.yview)
             self._listbox.pack(side="left", fill="both", expand=True)
@@ -218,7 +229,7 @@ def _fmt_duration(seconds: int) -> str:
 # Events tab
 # ---------------------------------------------------------------------------
 
-class EventsTab(tk.Frame):
+class EventsTab(ttk.Frame):
     _COLS = ("started_at", "app_name", "window_title", "duration", "category", "sub_category")
     _HEADERS = ("Date / Time", "App", "Window Title", "Duration", "Category", "Sub-category")
 
@@ -234,33 +245,34 @@ class EventsTab(tk.Frame):
 
     def _build(self) -> None:
         # --- Toolbar ---
-        toolbar = tk.Frame(self, pady=4)
-        toolbar.pack(fill="x", padx=8)
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill="x", padx=8, pady=6)
 
-        tk.Label(toolbar, text="Day:").pack(side="left")
+        ttk.Label(toolbar, text="Day:").pack(side="left")
         self._date_var = tk.StringVar(value="All")
         self._date_cb = ttk.Combobox(
             toolbar, textvariable=self._date_var, state="readonly", width=12
         )
-        self._date_cb.pack(side="left", padx=(2, 8))
+        self._date_cb.pack(side="left", padx=(4, 10))
         self._date_cb.bind("<<ComboboxSelected>>", lambda *_: self.refresh())
 
-        tk.Label(toolbar, text="Filter:").pack(side="left")
+        ttk.Label(toolbar, text="Filter:").pack(side="left")
         self._filter_var = tk.StringVar()
         self._filter_var.trace_add("write", lambda *_: self._apply_filter())
-        tk.Entry(toolbar, textvariable=self._filter_var, width=24).pack(side="left", padx=4)
+        ttk.Entry(toolbar, textvariable=self._filter_var, width=24).pack(side="left", padx=(4, 0))
 
-        tk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
-        tk.Button(toolbar, text="Export CSV…", command=self._export_csv).pack(
+        ttk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
+        ttk.Button(toolbar, text="Export CSV…", command=self._export_csv).pack(
             side="right", padx=(0, 4)
         )
-        self._commit_btn = tk.Button(
-            toolbar, text="Commit", state="disabled", command=self._commit
+        self._commit_btn = ttk.Button(
+            toolbar, text="Commit", state="disabled", command=self._commit,
+            style="Accent.TButton",
         )
         self._commit_btn.pack(side="right", padx=(0, 4))
 
         # --- Treeview ---
-        tree_frame = tk.Frame(self)
+        tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=8)
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
@@ -287,28 +299,29 @@ class EventsTab(tk.Frame):
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
 
-        self._tree.tag_configure("uncategorized", foreground="#999999")
-        self._tree.tag_configure("pending", foreground="#1a6fcc")
+        self._tree.tag_configure("uncategorized", foreground="#9ca3af")
+        self._tree.tag_configure("pending", foreground="#0078d4")
         self._tree.bind("<<TreeviewSelect>>", self._on_select)
 
         # --- Detail / edit panel ---
-        detail = tk.LabelFrame(self, text="Assign Category", padx=8, pady=6)
-        detail.pack(fill="x", padx=8, pady=(0, 8))
+        detail = ttk.LabelFrame(self, text="Assign Category", padding=(8, 6))
+        detail.pack(fill="x", padx=8, pady=(6, 8))
 
-        tk.Label(detail, text="Category:").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        ttk.Label(detail, text="Category:").grid(row=0, column=0, sticky="w", padx=(0, 4))
         self._cat_box = FilterableCombobox(
             detail, options=[], on_change=self._on_category_change, width=28
         )
         self._cat_box.grid(row=0, column=1, sticky="ew", padx=(0, 16))
 
-        tk.Label(detail, text="Sub-category:").grid(row=0, column=2, sticky="w", padx=(0, 4))
+        ttk.Label(detail, text="Sub-category:").grid(row=0, column=2, sticky="w", padx=(0, 4))
         self._sub_box = FilterableCombobox(
             detail, options=[], on_change=self._on_sub_change, width=28
         )
         self._sub_box.grid(row=0, column=3, sticky="ew")
 
-        tk.Button(detail, text="Apply", command=self._apply).grid(row=0, column=4, padx=(12, 0))
-        tk.Button(detail, text="Clear", command=self._clear_category).grid(
+        ttk.Button(detail, text="Apply", command=self._apply,
+                   style="Accent.TButton").grid(row=0, column=4, padx=(12, 0))
+        ttk.Button(detail, text="Clear", command=self._clear_category).grid(
             row=0, column=5, padx=(4, 0)
         )
 
@@ -430,6 +443,7 @@ class EventsTab(tk.Frame):
         self._commit_btn.config(
             text=f"Commit ({n})" if n else "Commit",
             state="normal" if n else "disabled",
+            style="Accent.TButton" if n else "TButton",
         )
 
     def _export_csv(self) -> None:
@@ -456,7 +470,7 @@ class EventsTab(tk.Frame):
 # Summary tab
 # ---------------------------------------------------------------------------
 
-class SummaryTab(tk.Frame):
+class SummaryTab(ttk.Frame):
     _COLS = ("category", "sub_category", "total_time", "event_count")
     _HEADERS = ("Category", "Sub-category", "Total Time", "Events")
 
@@ -467,20 +481,20 @@ class SummaryTab(tk.Frame):
         self.refresh()
 
     def _build(self) -> None:
-        toolbar = tk.Frame(self, pady=4)
-        toolbar.pack(fill="x", padx=8)
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill="x", padx=8, pady=6)
 
-        tk.Label(toolbar, text="Day:").pack(side="left")
+        ttk.Label(toolbar, text="Day:").pack(side="left")
         self._date_var = tk.StringVar(value="All")
         self._date_cb = ttk.Combobox(
             toolbar, textvariable=self._date_var, state="readonly", width=12
         )
-        self._date_cb.pack(side="left", padx=(2, 8))
+        self._date_cb.pack(side="left", padx=(4, 10))
         self._date_cb.bind("<<ComboboxSelected>>", lambda *_: self.refresh())
 
-        tk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
+        ttk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
 
-        tree_frame = tk.Frame(self)
+        tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
@@ -503,8 +517,8 @@ class SummaryTab(tk.Frame):
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
 
-        self._tree.tag_configure("category_row", font=("TkDefaultFont", 10, "bold"))
-        self._tree.tag_configure("uncategorized", foreground="#999999")
+        self._tree.tag_configure("category_row", font=("Segoe UI", 9, "bold"))
+        self._tree.tag_configure("uncategorized", foreground="#9ca3af")
 
     def refresh(self) -> None:
         self._tree.delete(*self._tree.get_children())
@@ -543,7 +557,7 @@ class SummaryTab(tk.Frame):
 # Rules tab
 # ---------------------------------------------------------------------------
 
-class RulesTab(tk.Frame):
+class RulesTab(ttk.Frame):
     """Manage auto-categorization rules and apply them to existing events."""
 
     _COLS = ("field", "pattern", "category", "sub_category")
@@ -558,51 +572,52 @@ class RulesTab(tk.Frame):
 
     def _build(self) -> None:
         # --- Add-rule form ---
-        form = tk.LabelFrame(self, text="Add Rule", padx=8, pady=6)
+        form = ttk.LabelFrame(self, text="Add Rule", padding=(8, 6))
         form.pack(fill="x", padx=8, pady=(8, 4))
 
-        tk.Label(form, text="Field:").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        ttk.Label(form, text="Field:").grid(row=0, column=0, sticky="w", padx=(0, 4))
         self._field_var = tk.StringVar(value="app_name")
         ttk.Combobox(
             form, textvariable=self._field_var, values=self._FIELD_OPTIONS,
             state="readonly", width=14,
         ).grid(row=0, column=1, sticky="ew", padx=(0, 12))
 
-        tk.Label(form, text="Pattern:").grid(row=0, column=2, sticky="w", padx=(0, 4))
+        ttk.Label(form, text="Pattern:").grid(row=0, column=2, sticky="w", padx=(0, 4))
         self._pattern_var = tk.StringVar()
-        tk.Entry(form, textvariable=self._pattern_var, width=22).grid(
+        ttk.Entry(form, textvariable=self._pattern_var, width=22).grid(
             row=0, column=3, sticky="ew", padx=(0, 12)
         )
 
-        tk.Label(form, text="Category:").grid(row=0, column=4, sticky="w", padx=(0, 4))
+        ttk.Label(form, text="Category:").grid(row=0, column=4, sticky="w", padx=(0, 4))
         self._cat_box = FilterableCombobox(form, options=[], width=18)
         self._cat_box.grid(row=0, column=5, sticky="ew", padx=(0, 12))
 
-        tk.Label(form, text="Sub-category:").grid(row=0, column=6, sticky="w", padx=(0, 4))
+        ttk.Label(form, text="Sub-category:").grid(row=0, column=6, sticky="w", padx=(0, 4))
         self._sub_box = FilterableCombobox(form, options=[], width=18)
         self._sub_box.grid(row=0, column=7, sticky="ew", padx=(0, 12))
 
-        tk.Button(form, text="Add Rule", command=self._add_rule).grid(row=0, column=8)
+        ttk.Button(form, text="Add Rule", command=self._add_rule,
+                   style="Accent.TButton").grid(row=0, column=8)
 
         for col in (3, 5, 7):
             form.columnconfigure(col, weight=1)
 
         # --- Toolbar ---
-        toolbar = tk.Frame(self, pady=4)
-        toolbar.pack(fill="x", padx=8)
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill="x", padx=8, pady=4)
 
-        tk.Button(toolbar, text="Delete Selected", command=self._delete_rule).pack(side="left")
-        tk.Button(
+        ttk.Button(toolbar, text="Delete Selected", command=self._delete_rule).pack(side="left")
+        ttk.Button(
             toolbar, text="Apply to all uncategorized", command=self._apply_all
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=(6, 0))
         self._status_var = tk.StringVar()
-        tk.Label(toolbar, textvariable=self._status_var, fg="#555555").pack(
+        ttk.Label(toolbar, textvariable=self._status_var, foreground=_SUBTEXT).pack(
             side="left", padx=(12, 0)
         )
-        tk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
+        ttk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
 
         # --- Treeview ---
-        tree_frame = tk.Frame(self)
+        tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
@@ -678,7 +693,7 @@ class RulesTab(tk.Frame):
 # Categories tab
 # ---------------------------------------------------------------------------
 
-class CategoriesTab(tk.Frame):
+class CategoriesTab(ttk.Frame):
     """
     Manage categories and sub-categories.
     Tree shows categories (bold) with their sub-categories as children.
@@ -699,23 +714,25 @@ class CategoriesTab(tk.Frame):
 
     def _build(self) -> None:
         # --- Top: create forms ---
-        top = tk.Frame(self)
+        top = ttk.Frame(self)
         top.pack(fill="x", padx=8, pady=(8, 4))
 
-        cat_frame = tk.LabelFrame(top, text="New Category", padx=8, pady=6)
+        cat_frame = ttk.LabelFrame(top, text="New Category", padding=(8, 6))
         cat_frame.pack(side="left", fill="x", expand=True, padx=(0, 4))
         self._new_cat_var = tk.StringVar()
-        tk.Entry(cat_frame, textvariable=self._new_cat_var, width=22).pack(side="left", padx=(0, 6))
-        tk.Button(cat_frame, text="Create", command=self._create_category).pack(side="left")
+        ttk.Entry(cat_frame, textvariable=self._new_cat_var, width=22).pack(side="left", padx=(0, 6))
+        ttk.Button(cat_frame, text="Create", command=self._create_category,
+                   style="Accent.TButton").pack(side="left")
 
-        sub_frame = tk.LabelFrame(top, text="New Sub-category  (select a category first)", padx=8, pady=6)
+        sub_frame = ttk.LabelFrame(top, text="New Sub-category  (select a category first)", padding=(8, 6))
         sub_frame.pack(side="left", fill="x", expand=True, padx=(4, 0))
         self._new_sub_var = tk.StringVar()
-        tk.Entry(sub_frame, textvariable=self._new_sub_var, width=22).pack(side="left", padx=(0, 6))
-        tk.Button(sub_frame, text="Create", command=self._create_sub_category).pack(side="left")
+        ttk.Entry(sub_frame, textvariable=self._new_sub_var, width=22).pack(side="left", padx=(0, 6))
+        ttk.Button(sub_frame, text="Create", command=self._create_sub_category,
+                   style="Accent.TButton").pack(side="left")
 
         # --- Middle: tree ---
-        tree_frame = tk.Frame(self)
+        tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=8, pady=4)
 
         vsb = ttk.Scrollbar(tree_frame, orient="vertical")
@@ -735,22 +752,24 @@ class CategoriesTab(tk.Frame):
         vsb.grid(row=0, column=1, sticky="ns")
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
-        self._tree.tag_configure("category", font=("TkDefaultFont", 10, "bold"))
+        self._tree.tag_configure("category", font=("Segoe UI", 9, "bold"))
         self._tree.bind("<<TreeviewSelect>>", self._on_select)
 
         # --- Bottom: edit panel ---
-        edit = tk.LabelFrame(self, text="Rename / Delete selected", padx=8, pady=6)
+        edit = ttk.LabelFrame(self, text="Rename / Delete selected", padding=(8, 6))
         edit.pack(fill="x", padx=8, pady=(0, 8))
 
-        tk.Label(edit, text="New name:").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        ttk.Label(edit, text="New name:").grid(row=0, column=0, sticky="w", padx=(0, 4))
         self._edit_var = tk.StringVar()
-        tk.Entry(edit, textvariable=self._edit_var, width=28).grid(
+        ttk.Entry(edit, textvariable=self._edit_var, width=28).grid(
             row=0, column=1, sticky="ew", padx=(0, 8)
         )
-        tk.Button(edit, text="Rename", command=self._rename).grid(row=0, column=2, padx=(0, 4))
-        tk.Button(edit, text="Delete", fg="#cc3333", command=self._delete).grid(row=0, column=3)
+        ttk.Button(edit, text="Rename", command=self._rename).grid(row=0, column=2, padx=(0, 4))
+        ttk.Button(edit, text="Delete", style="Danger.TButton", command=self._delete).grid(
+            row=0, column=3
+        )
         self._status_var = tk.StringVar()
-        tk.Label(edit, textvariable=self._status_var, fg="#555555").grid(
+        ttk.Label(edit, textvariable=self._status_var, foreground=_SUBTEXT).grid(
             row=0, column=4, padx=(12, 0), sticky="w"
         )
         edit.columnconfigure(1, weight=1)

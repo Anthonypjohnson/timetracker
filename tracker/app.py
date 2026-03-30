@@ -28,6 +28,20 @@ from tracker.watcher import Watcher, get_active_window
 
 _LIVE_POLL_MS = 1000  # how often the GUI refreshes the active-window display
 
+# Color palette
+_BG = "#f0f2f5"
+_SURFACE = "#ffffff"
+_ACCENT = "#0078d4"
+_ACCENT_DARK = "#005a9e"
+_TEXT = "#1a1a1a"
+_SUBTEXT = "#6b7280"
+_BORDER = "#d1d5db"
+_SUCCESS = "#16a34a"
+_DANGER = "#dc2626"
+_MUTED = "#9ca3af"
+_STATUS_BG = "#1e293b"
+_STATUS_FG = "#f1f5f9"
+
 
 def _fmt_duration(seconds: int) -> str:
     h, rem = divmod(int(seconds), 3600)
@@ -43,34 +57,37 @@ class StatusBar(tk.Frame):
     """Top bar: coloured status dot, label, and start/stop toggle button."""
 
     def __init__(self, parent: tk.Widget, on_toggle: callable) -> None:
-        super().__init__(parent, padx=10, pady=6)
-        self.configure(relief="groove", bd=1)
+        super().__init__(parent, bg=_STATUS_BG, padx=12, pady=9)
 
-        self._dot = tk.Label(self, text="●", font=("TkDefaultFont", 14), fg="#999999")
+        self._dot = tk.Label(self, text="●", font=("Segoe UI", 12), fg=_MUTED, bg=_STATUS_BG)
         self._dot.pack(side="left")
 
-        self._label = tk.Label(self, text="Stopped", width=12, anchor="w")
-        self._label.pack(side="left", padx=(4, 16))
+        self._label = tk.Label(
+            self, text="Stopped", width=12, anchor="w",
+            font=("Segoe UI", 9), fg=_STATUS_FG, bg=_STATUS_BG,
+        )
+        self._label.pack(side="left", padx=(6, 16))
 
-        self._btn = tk.Button(self, text="Start Monitoring", width=18, command=on_toggle)
+        self._btn = ttk.Button(self, text="Start Monitoring", width=18, command=on_toggle,
+                               style="Accent.TButton")
         self._btn.pack(side="left")
 
     def set_running(self, running: bool) -> None:
         if running:
-            self._dot.config(fg="#22bb44")
+            self._dot.config(fg=_SUCCESS)
             self._label.config(text="Monitoring")
-            self._btn.config(text="Stop Monitoring")
+            self._btn.config(text="Stop Monitoring", style="TButton")
         else:
-            self._dot.config(fg="#cc3333")
+            self._dot.config(fg=_DANGER)
             self._label.config(text="Stopped")
-            self._btn.config(text="Start Monitoring")
+            self._btn.config(text="Start Monitoring", style="Accent.TButton")
 
 
-class ActiveWindowPanel(tk.LabelFrame):
+class ActiveWindowPanel(ttk.LabelFrame):
     """Shows the current foreground window and how long it has been in focus."""
 
     def __init__(self, parent: tk.Widget) -> None:
-        super().__init__(parent, text="Active Window", padx=10, pady=6)
+        super().__init__(parent, text="Active Window", padding=(12, 8))
         self._last_key: tuple[str, str] = ("", "")
         self._focus_since: datetime = datetime.now(timezone.utc)
 
@@ -78,16 +95,18 @@ class ActiveWindowPanel(tk.LabelFrame):
         self._title_var = tk.StringVar(value="—")
         self._dur_var = tk.StringVar(value="—")
 
-        row_cfg = {"sticky": "w", "padx": (0, 16)}
+        row_cfg = {"sticky": "w", "padx": (0, 16), "pady": 2}
 
-        tk.Label(self, text="App:", width=7, anchor="w").grid(row=0, column=0, **row_cfg)
-        tk.Label(self, textvariable=self._app_var, anchor="w").grid(row=0, column=1, sticky="w")
+        ttk.Label(self, text="App:", width=8, anchor="w").grid(row=0, column=0, **row_cfg)
+        ttk.Label(self, textvariable=self._app_var, anchor="w").grid(row=0, column=1, sticky="w", pady=2)
 
-        tk.Label(self, text="Title:", width=7, anchor="w").grid(row=1, column=0, **row_cfg)
-        tk.Label(self, textvariable=self._title_var, anchor="w").grid(row=1, column=1, sticky="w")
+        ttk.Label(self, text="Title:", width=8, anchor="w").grid(row=1, column=0, **row_cfg)
+        ttk.Label(self, textvariable=self._title_var, anchor="w").grid(row=1, column=1, sticky="w", pady=2)
 
-        tk.Label(self, text="In focus:", width=7, anchor="w").grid(row=2, column=0, **row_cfg)
-        tk.Label(self, textvariable=self._dur_var, fg="#555555", anchor="w").grid(row=2, column=1, sticky="w")
+        ttk.Label(self, text="In focus:", width=8, anchor="w").grid(row=2, column=0, **row_cfg)
+        ttk.Label(self, textvariable=self._dur_var, foreground=_SUBTEXT, anchor="w").grid(
+            row=2, column=1, sticky="w", pady=2
+        )
 
         self.columnconfigure(1, weight=1)
 
@@ -125,9 +144,116 @@ class MainApp(tk.Tk):
         self._conn = conn
         self._watcher = Watcher(conn, on_event=self._on_event)
 
+        self._setup_theme()
         self._build()
         self._tick()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ------------------------------------------------------------------
+    # Theme
+    # ------------------------------------------------------------------
+
+    def _setup_theme(self) -> None:
+        style = ttk.Style(self)
+        style.theme_use("clam")
+
+        self.configure(bg=_BG)
+
+        _font = ("Segoe UI", 9)
+        _font_bold = ("Segoe UI", 9, "bold")
+
+        # Frame / LabelFrame
+        style.configure("TFrame", background=_BG)
+        style.configure("TLabelframe", background=_BG, relief="groove",
+                        borderwidth=1, bordercolor=_BORDER)
+        style.configure("TLabelframe.Label", background=_BG, foreground=_TEXT, font=_font_bold)
+
+        # Label
+        style.configure("TLabel", background=_BG, foreground=_TEXT, font=_font)
+        style.configure("Subtext.TLabel", foreground=_SUBTEXT)
+
+        # Button — neutral
+        style.configure("TButton",
+            font=_font, relief="flat", padding=(8, 4),
+            background="#e5e7eb", foreground=_TEXT, borderwidth=0,
+        )
+        style.map("TButton",
+            background=[("active", "#d1d5db"), ("pressed", _BORDER), ("disabled", "#f3f4f6")],
+            foreground=[("disabled", _MUTED)],
+            relief=[("pressed", "flat"), ("!pressed", "flat")],
+        )
+
+        # Button — primary accent
+        style.configure("Accent.TButton",
+            font=_font, relief="flat", padding=(8, 4),
+            background=_ACCENT, foreground="#ffffff", borderwidth=0,
+        )
+        style.map("Accent.TButton",
+            background=[("active", _ACCENT_DARK), ("pressed", "#004578")],
+            foreground=[("active", "#ffffff"), ("pressed", "#ffffff")],
+            relief=[("pressed", "flat"), ("!pressed", "flat")],
+        )
+
+        # Button — danger
+        style.configure("Danger.TButton",
+            font=_font, relief="flat", padding=(8, 4),
+            background="#fee2e2", foreground=_DANGER, borderwidth=0,
+        )
+        style.map("Danger.TButton",
+            background=[("active", "#fecaca"), ("pressed", "#fca5a5")],
+            foreground=[("active", _DANGER)],
+            relief=[("pressed", "flat"), ("!pressed", "flat")],
+        )
+
+        # Notebook
+        style.configure("TNotebook", background=_BG, borderwidth=0, tabmargins=[0, 4, 0, 0])
+        style.configure("TNotebook.Tab",
+            font=_font, padding=(14, 7),
+            background="#e5e7eb", foreground=_SUBTEXT,
+        )
+        style.map("TNotebook.Tab",
+            background=[("selected", _SURFACE), ("active", "#f3f4f6")],
+            foreground=[("selected", _ACCENT), ("active", _TEXT)],
+            expand=[("selected", [0, 0, 0, 0])],
+        )
+
+        # Treeview
+        style.configure("Treeview",
+            font=_font, rowheight=26,
+            background=_SURFACE, foreground=_TEXT, fieldbackground=_SURFACE,
+            borderwidth=0,
+        )
+        style.configure("Treeview.Heading",
+            font=_font_bold, background="#f3f4f6", foreground=_TEXT,
+            relief="flat", padding=(6, 5),
+        )
+        style.map("Treeview",
+            background=[("selected", "#dbeafe")],
+            foreground=[("selected", _TEXT)],
+        )
+        style.map("Treeview.Heading",
+            background=[("active", "#e5e7eb"), ("pressed", _BORDER)],
+            relief=[("pressed", "flat"), ("!pressed", "flat")],
+        )
+
+        # Entry / Combobox
+        style.configure("TEntry",
+            font=_font, padding=(5, 3),
+            fieldbackground=_SURFACE, bordercolor=_BORDER,
+        )
+        style.configure("TCombobox",
+            font=_font, padding=(5, 3),
+            fieldbackground=_SURFACE, bordercolor=_BORDER,
+        )
+
+        # Scrollbar — slim
+        style.configure("TScrollbar",
+            background=_BORDER, troughcolor=_BG,
+            arrowcolor=_SUBTEXT, borderwidth=0, arrowsize=10,
+        )
+        style.map("TScrollbar",
+            background=[("active", _SUBTEXT)],
+        )
 
     # ------------------------------------------------------------------
     # Build
@@ -135,13 +261,13 @@ class MainApp(tk.Tk):
 
     def _build(self) -> None:
         self._status_bar = StatusBar(self, on_toggle=self._toggle)
-        self._status_bar.pack(fill="x", padx=4, pady=(4, 0))
+        self._status_bar.pack(fill="x")
 
         self._active_panel = ActiveWindowPanel(self)
-        self._active_panel.pack(fill="x", padx=8, pady=(8, 0))
+        self._active_panel.pack(fill="x", padx=12, pady=(10, 0))
 
         self._notebook = ttk.Notebook(self)
-        self._notebook.pack(fill="both", expand=True, padx=8, pady=8)
+        self._notebook.pack(fill="both", expand=True, padx=12, pady=10)
 
         self._events_tab = EventsTab(self._notebook, self._conn)
         self._summary_tab = SummaryTab(self._notebook, self._conn)

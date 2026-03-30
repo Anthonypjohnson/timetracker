@@ -23,6 +23,7 @@ from tracker.db import (
     get_summary,
     insert_rule,
     delete_rule,
+    update_rule,
     rename_category,
     rename_sub_category,
     update_event_category,
@@ -566,12 +567,14 @@ class RulesTab(ttk.Frame):
     def __init__(self, parent: tk.Widget, conn: sqlite3.Connection) -> None:
         super().__init__(parent)
         self._conn = conn
+        self._editing_id: int | None = None
         self._build()
         self.refresh()
 
     def _build(self) -> None:
-        # --- Add-rule form ---
-        form = ttk.LabelFrame(self, text="Add Rule", padding=(8, 6))
+        # --- Add/Edit-rule form ---
+        self._form_frame = ttk.LabelFrame(self, text="Add Rule", padding=(8, 6))
+        form = self._form_frame
         form.pack(fill="x", padx=8, pady=(8, 4))
 
         # Row 0: App Pattern + Title Pattern
@@ -601,8 +604,12 @@ class RulesTab(ttk.Frame):
             form, textvariable=self._priority_var, from_=0, to=9999, width=6
         ).grid(row=0, column=9, sticky="ew", padx=(0, 12))
 
-        ttk.Button(form, text="Add Rule", command=self._add_rule,
-                   style="Accent.TButton").grid(row=0, column=10)
+        self._submit_btn = ttk.Button(form, text="Add Rule", command=self._submit_rule,
+                                      style="Accent.TButton")
+        self._submit_btn.grid(row=0, column=10)
+        self._cancel_btn = ttk.Button(form, text="Cancel", command=self._cancel_edit)
+        self._cancel_btn.grid(row=0, column=11, padx=(4, 0))
+        self._cancel_btn.grid_remove()
 
         ttk.Label(
             form, text="Leave a pattern blank to match any value for that field.",
@@ -616,7 +623,8 @@ class RulesTab(ttk.Frame):
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", padx=8, pady=4)
 
-        ttk.Button(toolbar, text="Delete Selected", command=self._delete_rule).pack(side="left")
+        ttk.Button(toolbar, text="Edit Selected", command=self._load_rule_for_edit).pack(side="left")
+        ttk.Button(toolbar, text="Delete Selected", command=self._delete_rule).pack(side="left", padx=(6, 0))
         ttk.Button(
             toolbar, text="Apply to all uncategorized", command=self._apply_all
         ).pack(side="left", padx=(6, 0))
@@ -650,6 +658,7 @@ class RulesTab(ttk.Frame):
         vsb.grid(row=0, column=1, sticky="ns")
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
+        self._tree.bind("<Double-1>", self._on_double_click)
 
     # ------------------------------------------------------------------
 
@@ -672,7 +681,7 @@ class RulesTab(ttk.Frame):
                 ),
             )
 
-    def _add_rule(self) -> None:
+    def _submit_rule(self) -> None:
         app_pat = self._app_pattern_var.get().strip() or None
         title_pat = self._title_pattern_var.get().strip() or None
         cat = self._cat_box.get()
@@ -687,14 +696,51 @@ class RulesTab(ttk.Frame):
         if not cat:
             self._status_var.set("Category is required.")
             return
-        insert_rule(self._conn, app_pat, title_pat, cat, sub, priority)
+        if self._editing_id is not None:
+            update_rule(self._conn, self._editing_id, app_pat, title_pat, cat, sub, priority)
+        else:
+            insert_rule(self._conn, app_pat, title_pat, cat, sub, priority)
+        self._clear_form()
+        self.refresh()
+
+    def _load_rule_for_edit(self) -> None:
+        sel = self._tree.selection()
+        if not sel:
+            return
+        rule_id = int(sel[0])
+        values = self._tree.item(sel[0], "values")
+        # values order: app_pattern, title_pattern, category, sub_category, priority
+        self._app_pattern_var.set(values[0])
+        self._title_pattern_var.set(values[1])
+        self._cat_box.set(values[2])
+        self._sub_box.set(values[3])
+        try:
+            self._priority_var.set(int(values[4]))
+        except (ValueError, tk.TclError):
+            self._priority_var.set(0)
+        self._editing_id = rule_id
+        self._form_frame.config(text="Edit Rule")
+        self._submit_btn.config(text="Save Changes")
+        self._cancel_btn.grid()
+        self._status_var.set("")
+
+    def _cancel_edit(self) -> None:
+        self._clear_form()
+
+    def _clear_form(self) -> None:
+        self._editing_id = None
         self._app_pattern_var.set("")
         self._title_pattern_var.set("")
         self._cat_box.set("")
         self._sub_box.set("")
         self._priority_var.set(0)
         self._status_var.set("")
-        self.refresh()
+        self._form_frame.config(text="Add Rule")
+        self._submit_btn.config(text="Add Rule")
+        self._cancel_btn.grid_remove()
+
+    def _on_double_click(self, _event: tk.Event) -> None:
+        self._load_rule_for_edit()
 
     def _delete_rule(self) -> None:
         sel = self._tree.selection()

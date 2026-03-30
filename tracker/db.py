@@ -60,7 +60,83 @@ def open_db(path: Path) -> sqlite3.Connection:
     conn.execute(SCHEMA_SUB_CATEGORIES)
     conn.commit()
     _migrate(conn)
+    _seed_defaults(conn)
     return conn
+
+
+_DEFAULT_CATEGORIES: list[tuple[str, list[str]]] = [
+    ("Work",         ["Email", "Meetings", "Coding", "Documents", "Research"]),
+    ("Communication",["Messaging", "Video Calls"]),
+    ("Productivity", ["Planning", "Notes"]),
+    ("Entertainment",["Video", "Music", "Gaming", "Social Media"]),
+    ("Utilities",    ["File Management", "Settings", "Terminal"]),
+    ("Web Browsing", []),
+    ("Other",        []),
+]
+
+# (app_name_pattern, window_title_pattern, category, sub_category, priority)
+_DEFAULT_RULES: list[tuple[str | None, str | None, str, str | None, int]] = [
+    # --- Communication ---
+    ("outlook.exe",       None,                    "Work",          "Email",        10),
+    ("thunderbird.exe",   None,                    "Work",          "Email",        10),
+    (None,                "Gmail",                 "Work",          "Email",         8),
+    ("teams.exe",         None,                    "Communication", "Meetings",     10),
+    ("zoom.exe",          None,                    "Communication", "Video Calls",  10),
+    ("slack.exe",         None,                    "Communication", "Messaging",    10),
+    ("discord.exe",       None,                    "Communication", "Messaging",    10),
+    ("msteams.exe",       None,                    "Communication", "Meetings",     10),
+    # --- Coding ---
+    ("code.exe",          None,                    "Work",          "Coding",       10),
+    ("devenv.exe",        None,                    "Work",          "Coding",       10),
+    ("idea64.exe",        None,                    "Work",          "Coding",       10),
+    ("pycharm64.exe",     None,                    "Work",          "Coding",       10),
+    ("windowsterminal.exe", None,                  "Utilities",     "Terminal",     10),
+    ("cmd.exe",           None,                    "Utilities",     "Terminal",      8),
+    ("powershell.exe",    None,                    "Utilities",     "Terminal",      8),
+    # --- Documents / Office ---
+    ("winword.exe",       None,                    "Work",          "Documents",    10),
+    ("excel.exe",         None,                    "Work",          "Documents",    10),
+    ("powerpnt.exe",      None,                    "Work",          "Documents",    10),
+    ("onenote.exe",       None,                    "Productivity",  "Notes",        10),
+    ("notion.exe",        None,                    "Productivity",  "Notes",        10),
+    ("obsidian.exe",      None,                    "Productivity",  "Notes",        10),
+    # --- Entertainment ---
+    ("vlc.exe",           None,                    "Entertainment", "Video",        10),
+    ("netflix.exe",       None,                    "Entertainment", "Video",        10),
+    (None,                "YouTube",               "Entertainment", "Video",         7),
+    ("spotify.exe",       None,                    "Entertainment", "Music",        10),
+    ("steam.exe",         None,                    "Entertainment", "Gaming",       10),
+    # --- Utilities ---
+    ("explorer.exe",      None,                    "Utilities",     "File Management", 10),
+    # --- Web browsing (low priority — catches browser windows not matched above) ---
+    ("chrome.exe",        None,                    "Web Browsing",  None,            1),
+    ("firefox.exe",       None,                    "Web Browsing",  None,            1),
+    ("msedge.exe",        None,                    "Web Browsing",  None,            1),
+    ("brave.exe",         None,                    "Web Browsing",  None,            1),
+    ("opera.exe",         None,                    "Web Browsing",  None,            1),
+]
+
+
+def _seed_defaults(conn: sqlite3.Connection) -> None:
+    """Insert default categories and rules on a fresh database (no-op if data already exists)."""
+    has_cats = conn.execute("SELECT 1 FROM categories LIMIT 1").fetchone()
+    has_rules = conn.execute("SELECT 1 FROM category_rules LIMIT 1").fetchone()
+    if has_cats or has_rules:
+        return
+    for category, subs in _DEFAULT_CATEGORIES:
+        conn.execute("INSERT OR IGNORE INTO categories (name) VALUES (?)", (category,))
+        for sub in subs:
+            conn.execute(
+                "INSERT OR IGNORE INTO sub_categories (category, name) VALUES (?, ?)",
+                (category, sub),
+            )
+    for app_pat, title_pat, cat, sub, priority in _DEFAULT_RULES:
+        conn.execute(
+            "INSERT INTO category_rules (app_name_pattern, window_title_pattern, category, sub_category, priority)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (app_pat, title_pat, cat, sub, priority),
+        )
+    conn.commit()
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -280,6 +356,24 @@ def insert_rule(
 
 def delete_rule(conn: sqlite3.Connection, rule_id: int) -> None:
     conn.execute("DELETE FROM category_rules WHERE id = ?", (rule_id,))
+    conn.commit()
+
+
+def update_rule(
+    conn: sqlite3.Connection,
+    rule_id: int,
+    app_name_pattern: str | None,
+    window_title_pattern: str | None,
+    category: str,
+    sub_category: str | None,
+    priority: int = 0,
+) -> None:
+    conn.execute(
+        "UPDATE category_rules"
+        " SET app_name_pattern=?, window_title_pattern=?, category=?, sub_category=?, priority=?"
+        " WHERE id=?",
+        (app_name_pattern or None, window_title_pattern or None, category, sub_category or None, priority, rule_id),
+    )
     conn.commit()
 
 

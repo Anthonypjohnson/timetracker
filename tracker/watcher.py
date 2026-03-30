@@ -17,6 +17,29 @@ POLL_INTERVAL = 3.0  # seconds
 _PROCESS_QUERY_INFORMATION = 0x0400
 _PROCESS_VM_READ = 0x0010
 
+# Sentinel values used when the screen is locked
+LOCK_APP = "[Screen Lock]"
+LOCK_TITLE = "Screen Locked"
+
+
+def _is_screen_locked() -> bool:
+    """
+    Return True when the Windows workstation is locked.
+
+    Uses OpenInputDesktop: when the workstation is locked the input desktop
+    switches to the Winlogon desktop, which regular processes cannot open
+    with DESKTOP_SWITCHDESKTOP rights, so the call returns NULL.
+    Always returns False on non-Windows platforms.
+    """
+    if sys.platform != "win32":
+        return False
+    _DESKTOP_SWITCHDESKTOP = 0x0100
+    hdesk = ctypes.windll.user32.OpenInputDesktop(0, False, _DESKTOP_SWITCHDESKTOP)
+    if hdesk:
+        ctypes.windll.user32.CloseDesktop(hdesk)
+        return False
+    return True
+
 
 def get_active_window() -> tuple[str, str]:
     """Return (app_name, window_title) for the current foreground window."""
@@ -92,13 +115,19 @@ class Watcher:
     # Internal
     # ------------------------------------------------------------------
 
+    def _current_window(self) -> tuple[str, str]:
+        """Return (app, title), substituting lock-screen sentinels when locked."""
+        if _is_screen_locked():
+            return LOCK_APP, LOCK_TITLE
+        return get_active_window()
+
     def _run(self) -> None:
-        self.current_app, self.current_title = get_active_window()
+        self.current_app, self.current_title = self._current_window()
         self.session_start = datetime.now(timezone.utc)
         logger.info("Tracker started.")
 
         while not self._stop_event.wait(timeout=POLL_INTERVAL):
-            app, title = get_active_window()
+            app, title = self._current_window()
             if (app, title) != (self.current_app, self.current_title):
                 self._flush(app, title)
 

@@ -3,24 +3,31 @@ EventsTab, SummaryTab, RulesTab, and CategoriesTab — reusable tkinter frames e
 """
 
 import csv
+import json
 import sqlite3
 import tkinter as tk
+from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
 from tracker.db import (
     apply_rules_to_uncategorized,
+    auto_categorize_event,
     bulk_update_categories,
     create_category,
     create_sub_category,
     delete_category,
     delete_sub_category,
+    ensure_category_exists,
+    export_data,
     get_all_events,
     get_event_dates,
     get_known_categories,
     get_known_sub_categories,
     get_rules,
     get_summary,
+    import_data,
+    insert_event,
     insert_rule,
     delete_rule,
     update_rule,
@@ -28,6 +35,7 @@ from tracker.db import (
     rename_sub_category,
     update_event_category,
 )
+from tracker.models import WindowEvent
 
 _SUBTEXT = "#6b7280"
 _DANGER = "#dc2626"
@@ -234,9 +242,15 @@ class EventsTab(ttk.Frame):
     _COLS = ("started_at", "app_name", "window_title", "duration", "category", "sub_category")
     _HEADERS = ("Date / Time", "App", "Window Title", "Duration", "Category", "Sub-category")
 
-    def __init__(self, parent: tk.Widget, conn: sqlite3.Connection):
+    def __init__(
+        self,
+        parent: tk.Widget,
+        conn: sqlite3.Connection,
+        on_event_added: Callable[[], None] | None = None,
+    ):
         super().__init__(parent)
         self._conn = conn
+        self._on_event_added = on_event_added
         self._events: list[dict] = []
         self._selected_ids: list[int] = []
         self._pending: dict[int, tuple[str | None, str | None]] = {}
@@ -270,6 +284,9 @@ class EventsTab(ttk.Frame):
         ).pack(side="left", padx=(10, 0))
 
         ttk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
+        ttk.Button(toolbar, text="Add Event…", command=self._open_add_event_dialog).pack(
+            side="right", padx=(0, 4)
+        )
         ttk.Button(toolbar, text="Export CSV…", command=self._export_csv).pack(
             side="right", padx=(0, 4)
         )
@@ -543,6 +560,97 @@ class EventsTab(ttk.Frame):
         dlg.update_idletasks()
         dlg.geometry(f"+{self.winfo_rootx() + 80}+{self.winfo_rooty() + 80}")
 
+    def _open_add_event_dialog(self) -> None:
+        dlg = tk.Toplevel(self)
+        dlg.title("Add Event")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        form = ttk.Frame(dlg, padding=12)
+        form.pack(fill="both", expand=True)
+
+        now = datetime.now()
+        default_dt = now.strftime("%Y-%m-%d %H:%M")
+
+        ttk.Label(form, text="App Name:").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        app_var = tk.StringVar()
+        ttk.Entry(form, textvariable=app_var, width=36).grid(row=0, column=1, sticky="ew", pady=4)
+
+        ttk.Label(form, text="Window Title:").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=4)
+        title_var = tk.StringVar()
+        ttk.Entry(form, textvariable=title_var, width=36).grid(row=1, column=1, sticky="ew", pady=4)
+
+        ttk.Label(form, text="Start (YYYY-MM-DD HH:MM):").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=4)
+        start_var = tk.StringVar(value=default_dt)
+        ttk.Entry(form, textvariable=start_var, width=20).grid(row=2, column=1, sticky="w", pady=4)
+
+        ttk.Label(form, text="Duration (minutes):").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=4)
+        dur_var = tk.IntVar(value=5)
+        ttk.Spinbox(form, textvariable=dur_var, from_=1, to=9999, width=8).grid(
+            row=3, column=1, sticky="w", pady=4
+        )
+
+        ttk.Label(form, text="Category:").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=4)
+        cats = get_known_categories(self._conn)
+        cat_box = FilterableCombobox(form, options=cats, width=34)
+        cat_box.grid(row=4, column=1, sticky="ew", pady=4)
+
+        ttk.Label(form, text="Sub-category:").grid(row=5, column=0, sticky="w", padx=(0, 6), pady=4)
+        subs = get_known_sub_categories(self._conn)
+        sub_box = FilterableCombobox(form, options=subs, width=34)
+        sub_box.grid(row=5, column=1, sticky="ew", pady=4)
+
+        status_var = tk.StringVar()
+        ttk.Label(form, textvariable=status_var, foreground=_DANGER).grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(4, 0)
+        )
+
+        def _save() -> None:
+            app = app_var.get().strip()
+            title = title_var.get().strip()
+            start_str = start_var.get().strip()
+            if not app:
+                status_var.set("App Name is required.")
+                return
+            try:
+                started_at = datetime.strptime(start_str, "%Y-%m-%d %H:%M")
+            except ValueError:
+                status_var.set("Invalid date/time. Use YYYY-MM-DD HH:MM.")
+                return
+            try:
+                duration = max(1, int(dur_var.get())) * 60
+            except (ValueError, tk.TclError):
+                status_var.set("Duration must be a number.")
+                return
+            cat = cat_box.get() or None
+            sub = sub_box.get() or None
+            event = WindowEvent(
+                app_name=app,
+                window_title=title,
+                started_at=started_at,
+                duration_seconds=duration,
+            )
+            event_id = insert_event(self._conn, event)
+            if cat:
+                ensure_category_exists(self._conn, cat, sub)
+                from tracker.db import update_event_category as _uec
+                _uec(self._conn, event_id, cat, sub)
+            else:
+                auto_categorize_event(self._conn, event_id, app, title)
+            dlg.destroy()
+            self.refresh()
+            if self._on_event_added:
+                self._on_event_added()
+
+        btn_frame = ttk.Frame(form)
+        btn_frame.grid(row=7, column=0, columnspan=2, sticky="e", pady=(8, 0))
+        ttk.Button(btn_frame, text="Add Event", command=_save, style="Accent.TButton").pack(side="left")
+        ttk.Button(btn_frame, text="Cancel", command=dlg.destroy).pack(side="left", padx=(6, 0))
+
+        form.columnconfigure(1, weight=1)
+        dlg.update_idletasks()
+        dlg.geometry(f"+{self.winfo_rootx() + 80}+{self.winfo_rooty() + 80}")
+
     def _export_csv(self) -> None:
         path = filedialog.asksaveasfilename(
             defaultextension=".csv",
@@ -574,6 +682,7 @@ class SummaryTab(ttk.Frame):
     def __init__(self, parent: tk.Widget, conn: sqlite3.Connection):
         super().__init__(parent)
         self._conn = conn
+        self._rows: list[dict] = []
         self._build()
         self.refresh()
 
@@ -590,6 +699,7 @@ class SummaryTab(ttk.Frame):
         self._date_cb.bind("<<ComboboxSelected>>", lambda *_: self.refresh())
 
         ttk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
+        ttk.Button(toolbar, text="Export CSV…", command=self._export_csv).pack(side="right", padx=(0, 4))
 
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -626,6 +736,7 @@ class SummaryTab(ttk.Frame):
             self._date_var.set("All")
         date_filter = self._date_var.get()
         rows = get_summary(self._conn, date_filter if date_filter != "All" else None)
+        self._rows = rows
 
         from itertools import groupby
         for cat, group in groupby(rows, key=lambda r: r["category"]):
@@ -649,6 +760,26 @@ class SummaryTab(ttk.Frame):
                         values=("", item["sub_category"], _fmt_duration(item["total_seconds"]), item["event_count"]),
                     )
 
+    def _export_csv(self) -> None:
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Export summary as CSV",
+        )
+        if not path:
+            return
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Category", "Sub-category", "Total Time", "Total Seconds", "Events"])
+            for row in self._rows:
+                writer.writerow([
+                    row["category"],
+                    row["sub_category"] or "",
+                    _fmt_duration(row["total_seconds"]),
+                    row["total_seconds"],
+                    row["event_count"],
+                ])
+
 
 # ---------------------------------------------------------------------------
 # Rules tab
@@ -660,10 +791,19 @@ class RulesTab(ttk.Frame):
     _COLS = ("app_name_pattern", "window_title_pattern", "category", "sub_category", "priority")
     _HEADERS = ("App Pattern", "Title Pattern", "Category", "Sub-category", "Priority")
 
-    def __init__(self, parent: tk.Widget, conn: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        parent: tk.Widget,
+        conn: sqlite3.Connection,
+        on_data_changed: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._conn = conn
+        self._on_data_changed = on_data_changed
         self._editing_id: int | None = None
+        self._rules: list[dict] = []
+        self._sort_col: str | None = None
+        self._sort_reverse: bool = False
         self._build()
         self.refresh()
 
@@ -729,6 +869,12 @@ class RulesTab(ttk.Frame):
             side="left", padx=(12, 0)
         )
         ttk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
+        ttk.Button(toolbar, text="Import…", command=self._import_json).pack(side="right", padx=(0, 4))
+        ttk.Button(toolbar, text="Export…", command=self._export_json).pack(side="right", padx=(0, 4))
+        ttk.Label(toolbar, text="Filter:").pack(side="right", padx=(8, 2))
+        self._filter_var = tk.StringVar()
+        self._filter_var.trace_add("write", lambda *_: self._apply_filter())
+        ttk.Entry(toolbar, textvariable=self._filter_var, width=20).pack(side="right")
 
         # --- Treeview ---
         tree_frame = ttk.Frame(self)
@@ -746,7 +892,7 @@ class RulesTab(ttk.Frame):
 
         widths = (160, 200, 140, 140, 70)
         for col, header, width in zip(self._COLS, self._HEADERS, widths):
-            self._tree.heading(col, text=header)
+            self._tree.heading(col, text=header, command=lambda c=col: self._sort(c))
             self._tree.column(col, width=width, minwidth=50)
         self._tree.column("priority", anchor="center")
 
@@ -759,23 +905,96 @@ class RulesTab(ttk.Frame):
     # ------------------------------------------------------------------
 
     def refresh(self) -> None:
-        self._tree.delete(*self._tree.get_children())
         cats = get_known_categories(self._conn)
         subs = get_known_sub_categories(self._conn)
         self._cat_box.set_options(cats)
         self._sub_box.set_options(subs)
-        for rule in get_rules(self._conn):
+        self._rules = list(get_rules(self._conn))
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        q = self._filter_var.get().lower()
+        self._tree.delete(*self._tree.get_children())
+        rules = self._rules
+        if self._sort_col is not None:
+            key = self._sort_col
+
+            def _sort_key(r: dict):
+                v = r.get(key) or ""
+                if key == "priority":
+                    try:
+                        return int(v)
+                    except (ValueError, TypeError):
+                        return 0
+                return str(v).lower()
+
+            rules = sorted(rules, key=_sort_key, reverse=self._sort_reverse)
+        for rule in rules:
+            app_pat = rule["app_name_pattern"] or ""
+            title_pat = rule["window_title_pattern"] or ""
+            cat = rule["category"]
+            sub = rule["sub_category"] or ""
+            if q and not any(q in v.lower() for v in (app_pat, title_pat, cat, sub)):
+                continue
             self._tree.insert(
                 "", "end",
                 iid=str(rule["id"]),
-                values=(
-                    rule["app_name_pattern"] or "",
-                    rule["window_title_pattern"] or "",
-                    rule["category"],
-                    rule["sub_category"] or "",
-                    rule["priority"],
-                ),
+                values=(app_pat, title_pat, cat, sub, rule["priority"]),
             )
+
+    def _sort(self, col: str) -> None:
+        if self._sort_col == col:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_col = col
+            self._sort_reverse = False
+        # Update heading arrows
+        for c, h in zip(self._COLS, self._HEADERS):
+            arrow = (" ▲" if not self._sort_reverse else " ▼") if c == col else ""
+            self._tree.heading(c, text=h + arrow)
+        self._apply_filter()
+
+    def _export_json(self) -> None:
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            title="Export categories and rules",
+        )
+        if not path:
+            return
+        data = export_data(self._conn)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        messagebox.showinfo(
+            "Export complete",
+            f"Exported {len(data['categories'])} categories and {len(data['rules'])} rules.",
+        )
+
+    def _import_json(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            title="Import categories and rules",
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            messagebox.showerror("Import failed", f"Could not read file:\n{exc}")
+            return
+        try:
+            cats_added, rules_added = import_data(self._conn, data)
+        except Exception as exc:
+            messagebox.showerror("Import failed", f"Error importing data:\n{exc}")
+            return
+        messagebox.showinfo(
+            "Import complete",
+            f"Added {cats_added} categories/sub-categories and {rules_added} rules.",
+        )
+        self.refresh()
+        if self._on_data_changed:
+            self._on_data_changed()
 
     def _submit_rule(self) -> None:
         app_pat = self._app_pattern_var.get().strip() or None
@@ -867,11 +1086,18 @@ class CategoriesTab(ttk.Frame):
     _CAT = "C|||"
     _SUB = "S|||"
 
-    def __init__(self, parent: tk.Widget, conn: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        parent: tk.Widget,
+        conn: sqlite3.Connection,
+        on_data_changed: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self._conn = conn
+        self._on_data_changed = on_data_changed
         self._sel_category: str | None = None
         self._sel_sub: str | None = None
+        self._cat_data: dict[str, tuple[int, list[tuple[str, int]]]] = {}
         self._build()
         self.refresh()
 
@@ -893,6 +1119,17 @@ class CategoriesTab(ttk.Frame):
         ttk.Entry(sub_frame, textvariable=self._new_sub_var, width=22).pack(side="left", padx=(0, 6))
         ttk.Button(sub_frame, text="Create", command=self._create_sub_category,
                    style="Accent.TButton").pack(side="left")
+
+        # --- Filter / toolbar ---
+        filter_frame = ttk.Frame(self)
+        filter_frame.pack(fill="x", padx=8, pady=(0, 2))
+        ttk.Label(filter_frame, text="Filter:").pack(side="left")
+        self._filter_var = tk.StringVar()
+        self._filter_var.trace_add("write", lambda *_: self._apply_filter())
+        ttk.Entry(filter_frame, textvariable=self._filter_var, width=24).pack(side="left", padx=(4, 0))
+        ttk.Button(filter_frame, text="Refresh", command=self.refresh).pack(side="right")
+        ttk.Button(filter_frame, text="Import…", command=self._import_json).pack(side="right", padx=(0, 4))
+        ttk.Button(filter_frame, text="Export…", command=self._export_json).pack(side="right", padx=(0, 4))
 
         # --- Middle: tree ---
         tree_frame = ttk.Frame(self)
@@ -940,12 +1177,30 @@ class CategoriesTab(ttk.Frame):
     # ------------------------------------------------------------------
 
     def refresh(self) -> None:
-        self._tree.delete(*self._tree.get_children())
+        self._cat_data = {}
         for cat in get_known_categories(self._conn):
             cat_count = self._conn.execute(
                 "SELECT COUNT(*) FROM window_events WHERE category = ?", (cat,)
             ).fetchone()[0]
-            self._tree.insert(
+            subs: list[tuple[str, int]] = []
+            for sub in get_known_sub_categories(self._conn, cat):
+                sub_count = self._conn.execute(
+                    "SELECT COUNT(*) FROM window_events WHERE category = ? AND sub_category = ?",
+                    (cat, sub),
+                ).fetchone()[0]
+                subs.append((sub, sub_count))
+            self._cat_data[cat] = (cat_count, subs)
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        q = self._filter_var.get().lower()
+        self._tree.delete(*self._tree.get_children())
+        for cat, (cat_count, subs) in self._cat_data.items():
+            cat_matches = not q or q in cat.lower()
+            matching_subs = [(s, c) for s, c in subs if not q or q in s.lower()]
+            if not cat_matches and not matching_subs:
+                continue
+            parent = self._tree.insert(
                 "", "end",
                 iid=f"{self._CAT}{cat}",
                 text=cat,
@@ -953,17 +1208,56 @@ class CategoriesTab(ttk.Frame):
                 tags=("category",),
                 open=True,
             )
-            for sub in get_known_sub_categories(self._conn, cat):
-                sub_count = self._conn.execute(
-                    "SELECT COUNT(*) FROM window_events WHERE category = ? AND sub_category = ?",
-                    (cat, sub),
-                ).fetchone()[0]
+            shown_subs = subs if cat_matches else matching_subs
+            for sub, sub_count in shown_subs:
                 self._tree.insert(
-                    f"{self._CAT}{cat}", "end",
+                    parent, "end",
                     iid=f"{self._SUB}{cat}|||{sub}",
                     text=sub,
                     values=(sub_count,),
                 )
+
+    def _export_json(self) -> None:
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            title="Export categories and rules",
+        )
+        if not path:
+            return
+        data = export_data(self._conn)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        messagebox.showinfo(
+            "Export complete",
+            f"Exported {len(data['categories'])} categories and {len(data['rules'])} rules.",
+        )
+
+    def _import_json(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            title="Import categories and rules",
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            messagebox.showerror("Import failed", f"Could not read file:\n{exc}")
+            return
+        try:
+            cats_added, rules_added = import_data(self._conn, data)
+        except Exception as exc:
+            messagebox.showerror("Import failed", f"Error importing data:\n{exc}")
+            return
+        messagebox.showinfo(
+            "Import complete",
+            f"Added {cats_added} categories/sub-categories and {rules_added} rules.",
+        )
+        self.refresh()
+        if self._on_data_changed:
+            self._on_data_changed()
 
     def _on_select(self, event=None) -> None:
         sel = self._tree.selection()

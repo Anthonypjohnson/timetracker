@@ -21,7 +21,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from datetime import datetime, timezone
 
-from tracker.db import get_uncategorized_count
+from tracker.db import get_uncategorized_count, get_setting, set_setting
 from tracker.models import WindowEvent
 from tracker.review import EventsTab, SummaryTab, RulesTab, CategoriesTab
 from tracker.watcher import Watcher, get_active_window
@@ -54,9 +54,15 @@ def _fmt_duration(seconds: int) -> str:
 
 
 class StatusBar(tk.Frame):
-    """Top bar: coloured status dot, label, and start/stop toggle button."""
+    """Top bar: coloured status dot, label, start/stop toggle, and autostart checkbox."""
 
-    def __init__(self, parent: tk.Widget, on_toggle: callable) -> None:
+    def __init__(
+        self,
+        parent: tk.Widget,
+        on_toggle: callable,
+        autostart_value: bool = False,
+        on_autostart_change: callable | None = None,
+    ) -> None:
         super().__init__(parent, bg=_STATUS_BG, padx=12, pady=9)
 
         self._dot = tk.Label(self, text="●", font=("Segoe UI", 12), fg=_MUTED, bg=_STATUS_BG)
@@ -71,6 +77,24 @@ class StatusBar(tk.Frame):
         self._btn = ttk.Button(self, text="Start Monitoring", width=18, command=on_toggle,
                                style="Accent.TButton")
         self._btn.pack(side="left")
+
+        # Autostart checkbox on the right
+        self._autostart_var = tk.BooleanVar(value=autostart_value)
+        tk.Checkbutton(
+            self,
+            text="Auto-start on launch",
+            variable=self._autostart_var,
+            command=on_autostart_change,
+            bg=_STATUS_BG, fg=_STATUS_FG,
+            selectcolor=_STATUS_BG,
+            activebackground=_STATUS_BG, activeforeground=_STATUS_FG,
+            font=("Segoe UI", 9),
+            borderwidth=0, highlightthickness=0,
+        ).pack(side="right", padx=(0, 4))
+
+    @property
+    def autostart(self) -> bool:
+        return self._autostart_var.get()
 
     def set_running(self, running: bool) -> None:
         if running:
@@ -148,6 +172,10 @@ class MainApp(tk.Tk):
         self._build()
         self._tick()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Auto-start monitoring if the setting is enabled
+        if sys.platform == "win32" and get_setting(conn, "autostart_monitoring", "0") == "1":
+            self._toggle()
 
     # ------------------------------------------------------------------
     # Theme
@@ -260,7 +288,13 @@ class MainApp(tk.Tk):
     # ------------------------------------------------------------------
 
     def _build(self) -> None:
-        self._status_bar = StatusBar(self, on_toggle=self._toggle)
+        autostart = get_setting(self._conn, "autostart_monitoring", "0") == "1"
+        self._status_bar = StatusBar(
+            self,
+            on_toggle=self._toggle,
+            autostart_value=autostart,
+            on_autostart_change=self._save_autostart,
+        )
         self._status_bar.pack(fill="x")
 
         self._active_panel = ActiveWindowPanel(self)
@@ -269,10 +303,10 @@ class MainApp(tk.Tk):
         self._notebook = ttk.Notebook(self)
         self._notebook.pack(fill="both", expand=True, padx=12, pady=10)
 
-        self._events_tab = EventsTab(self._notebook, self._conn)
+        self._events_tab = EventsTab(self._notebook, self._conn, on_event_added=self._update_review_tab_label)
         self._summary_tab = SummaryTab(self._notebook, self._conn)
-        self._rules_tab = RulesTab(self._notebook, self._conn)
-        self._categories_tab = CategoriesTab(self._notebook, self._conn)
+        self._rules_tab = RulesTab(self._notebook, self._conn, on_data_changed=self._on_rules_cats_changed)
+        self._categories_tab = CategoriesTab(self._notebook, self._conn, on_data_changed=self._on_rules_cats_changed)
 
         self._notebook.add(self._events_tab, text="  Review  ")
         self._notebook.add(self._summary_tab, text="  Summary  ")
@@ -327,6 +361,15 @@ class MainApp(tk.Tk):
         count = get_uncategorized_count(self._conn)
         label = f"  Review ({count} uncategorized)  " if count else "  Review  "
         self._notebook.tab(0, text=label)
+
+    def _save_autostart(self) -> None:
+        value = "1" if self._status_bar.autostart else "0"
+        set_setting(self._conn, "autostart_monitoring", value)
+
+    def _on_rules_cats_changed(self) -> None:
+        """Refresh both Rules and Categories tabs after an import."""
+        self._rules_tab.refresh()
+        self._categories_tab.refresh()
 
     def _on_tab_change(self, event=None) -> None:
         tab = self._notebook.tab(self._notebook.select(), "text").strip()

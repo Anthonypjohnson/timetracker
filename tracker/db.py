@@ -40,6 +40,13 @@ CREATE TABLE IF NOT EXISTS sub_categories (
 );
 """
 
+SCHEMA_SETTINGS = """
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
 _MIGRATIONS = [
     "ALTER TABLE window_events ADD COLUMN category TEXT;",
     "ALTER TABLE window_events ADD COLUMN sub_category TEXT;",
@@ -58,6 +65,7 @@ def open_db(path: Path) -> sqlite3.Connection:
     conn.execute(SCHEMA_RULES)
     conn.execute(SCHEMA_CATEGORIES)
     conn.execute(SCHEMA_SUB_CATEGORIES)
+    conn.execute(SCHEMA_SETTINGS)
     conn.commit()
     _migrate(conn)
     _seed_defaults(conn)
@@ -337,6 +345,21 @@ def get_rules(conn: sqlite3.Connection) -> list[dict]:
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def ensure_category_exists(
+    conn: sqlite3.Connection, category: str, sub_category: str | None
+) -> None:
+    """Insert category (and optional sub-category) if they don't already exist."""
+    if not category:
+        return
+    conn.execute("INSERT OR IGNORE INTO categories (name) VALUES (?)", (category,))
+    if sub_category:
+        conn.execute(
+            "INSERT OR IGNORE INTO sub_categories (category, name) VALUES (?, ?)",
+            (category, sub_category),
+        )
+    conn.commit()
+
+
 def insert_rule(
     conn: sqlite3.Connection,
     app_name_pattern: str | None,
@@ -345,6 +368,7 @@ def insert_rule(
     sub_category: str | None,
     priority: int = 0,
 ) -> None:
+    ensure_category_exists(conn, category, sub_category or None)
     conn.execute(
         "INSERT INTO category_rules"
         " (app_name_pattern, window_title_pattern, category, sub_category, priority)"
@@ -368,6 +392,7 @@ def update_rule(
     sub_category: str | None,
     priority: int = 0,
 ) -> None:
+    ensure_category_exists(conn, category, sub_category or None)
     conn.execute(
         "UPDATE category_rules"
         " SET app_name_pattern=?, window_title_pattern=?, category=?, sub_category=?, priority=?"
@@ -375,6 +400,72 @@ def update_rule(
         (app_name_pattern or None, window_title_pattern or None, category, sub_category or None, priority, rule_id),
     )
     conn.commit()
+
+
+def export_data(conn: sqlite3.Connection) -> dict:
+    """Return all categories, sub-categories, and rules as a JSON-serializable dict."""
+    cats: dict[str, list[str]] = {}
+    for cat in get_known_categories(conn):
+        cats[cat] = get_known_sub_categories(conn, cat)
+    rules = [
+        {
+            "app_name_pattern": r["app_name_pattern"],
+            "window_title_pattern": r["window_title_pattern"],
+            "category": r["category"],
+            "sub_category": r["sub_category"],
+            "priority": r["priority"],
+        }
+        for r in get_rules(conn)
+    ]
+    return {"categories": cats, "rules": rules}
+
+
+def import_data(conn: sqlite3.Connection, data: dict) -> tuple[int, int]:
+    """
+    Merge categories and rules from *data* into the database.
+    Returns (categories_added, rules_added).
+    Categories/sub-categories use INSERT OR IGNORE (no duplicates).
+    Rules are always inserted (the user can delete duplicates manually).
+    """
+    cats_added = 0
+    for cat, subs in data.get("categories", {}).items():
+        if not cat:
+            continue
+        before = conn.execute(
+            "SELECT 1 FROM categories WHERE name = ?", (cat,)
+        ).fetchone()
+        conn.execute("INSERT OR IGNORE INTO categories (name) VALUES (?)", (cat,))
+        if not before:
+            cats_added += 1
+        for sub in subs or []:
+            if not sub:
+                continue
+            before_sub = conn.execute(
+                "SELECT 1 FROM sub_categories WHERE category = ? AND name = ?", (cat, sub)
+            ).fetchone()
+            conn.execute(
+                "INSERT OR IGNORE INTO sub_categories (category, name) VALUES (?, ?)", (cat, sub)
+            )
+            if not before_sub:
+                cats_added += 1
+    rules_added = 0
+    for rule in data.get("rules", []):
+        cat = rule.get("category", "")
+        if not cat:
+            continue
+        app_pat = rule.get("app_name_pattern") or None
+        title_pat = rule.get("window_title_pattern") or None
+        sub = rule.get("sub_category") or None
+        priority = int(rule.get("priority") or 0)
+        conn.execute(
+            "INSERT INTO category_rules"
+            " (app_name_pattern, window_title_pattern, category, sub_category, priority)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (app_pat, title_pat, cat, sub, priority),
+        )
+        rules_added += 1
+    conn.commit()
+    return cats_added, rules_added
 
 
 def _rule_matches(rule: dict, app_name: str, window_title: str) -> bool:
@@ -417,6 +508,18 @@ def apply_rules_to_uncategorized(conn: sqlite3.Connection) -> int:
                 count += 1
                 break
     return count
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value)
+    )
+    conn.commit()
 
 
 def get_summary(conn: sqlite3.Connection, date: str | None = None) -> list[dict]:

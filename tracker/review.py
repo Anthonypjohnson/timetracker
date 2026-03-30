@@ -262,6 +262,13 @@ class EventsTab(ttk.Frame):
         self._filter_var.trace_add("write", lambda *_: self._apply_filter())
         ttk.Entry(toolbar, textvariable=self._filter_var, width=24).pack(side="left", padx=(4, 0))
 
+        self._uncat_only_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            toolbar, text="Uncategorized only",
+            variable=self._uncat_only_var,
+            command=self._apply_filter,
+        ).pack(side="left", padx=(10, 0))
+
         ttk.Button(toolbar, text="Refresh", command=self.refresh).pack(side="right")
         ttk.Button(toolbar, text="Export CSV…", command=self._export_csv).pack(
             side="right", padx=(0, 4)
@@ -325,6 +332,10 @@ class EventsTab(ttk.Frame):
         ttk.Button(detail, text="Clear", command=self._clear_category).grid(
             row=0, column=5, padx=(4, 0)
         )
+        self._create_rule_btn = ttk.Button(
+            detail, text="Create Rule…", command=self._open_create_rule_dialog, state="disabled"
+        )
+        self._create_rule_btn.grid(row=0, column=6, padx=(12, 0))
 
         detail.columnconfigure(1, weight=1)
         detail.columnconfigure(3, weight=1)
@@ -355,9 +366,12 @@ class EventsTab(ttk.Frame):
 
     def _apply_filter(self) -> None:
         q = self._filter_var.get().lower()
+        uncat_only = self._uncat_only_var.get()
         self._tree.delete(*self._tree.get_children())
         for ev in self._events:
             if q and q not in (ev["app_name"] or "").lower() and q not in (ev["window_title"] or "").lower():
+                continue
+            if uncat_only and (ev["category"] or ev["id"] in self._pending):
                 continue
             if ev["id"] in self._pending:
                 tag = "pending"
@@ -390,6 +404,7 @@ class EventsTab(ttk.Frame):
         sel = self._tree.selection()
         if not sel:
             self._selected_ids = []
+            self._create_rule_btn.config(state="disabled")
             return
         self._selected_ids = [int(iid) for iid in sel]
         if len(sel) == 1:
@@ -397,9 +412,11 @@ class EventsTab(ttk.Frame):
             if ev:
                 self._cat_box.set(ev["category"] or "")
                 self._sub_box.set(ev["sub_category"] or "")
+            self._create_rule_btn.config(state="normal")
         else:
             self._cat_box.set("")
             self._sub_box.set("")
+            self._create_rule_btn.config(state="disabled")
 
     def _on_category_change(self, value: str) -> None:
         subs = get_known_sub_categories(self._conn, value or None)
@@ -446,6 +463,85 @@ class EventsTab(ttk.Frame):
             state="normal" if n else "disabled",
             style="Accent.TButton" if n else "TButton",
         )
+
+    def _open_create_rule_dialog(self) -> None:
+        if len(self._selected_ids) != 1:
+            return
+        ev = next((e for e in self._events if e["id"] == self._selected_ids[0]), None)
+        if ev is None:
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Create Rule")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        form = ttk.Frame(dlg, padding=12)
+        form.pack(fill="both", expand=True)
+
+        ttk.Label(form, text="App Pattern:").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        app_var = tk.StringVar(value=ev["app_name"] or "")
+        ttk.Entry(form, textvariable=app_var, width=36).grid(row=0, column=1, sticky="ew", pady=4)
+
+        ttk.Label(form, text="Title Pattern:").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=4)
+        title_var = tk.StringVar(value=ev["window_title"] or "")
+        ttk.Entry(form, textvariable=title_var, width=36).grid(row=1, column=1, sticky="ew", pady=4)
+
+        ttk.Label(form, text="Category:").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=4)
+        cats = get_known_categories(self._conn)
+        cat_box = FilterableCombobox(form, options=cats, width=34)
+        cat_box.set(ev["category"] or "")
+        cat_box.grid(row=2, column=1, sticky="ew", pady=4)
+
+        ttk.Label(form, text="Sub-category:").grid(row=3, column=0, sticky="w", padx=(0, 6), pady=4)
+        subs = get_known_sub_categories(self._conn)
+        sub_box = FilterableCombobox(form, options=subs, width=34)
+        sub_box.set(ev["sub_category"] or "")
+        sub_box.grid(row=3, column=1, sticky="ew", pady=4)
+
+        ttk.Label(form, text="Priority:").grid(row=4, column=0, sticky="w", padx=(0, 6), pady=4)
+        priority_var = tk.IntVar(value=0)
+        ttk.Spinbox(form, textvariable=priority_var, from_=0, to=9999, width=8).grid(
+            row=4, column=1, sticky="w", pady=4
+        )
+
+        ttk.Label(
+            form,
+            text="Leave a pattern blank to match any value.",
+            foreground=_SUBTEXT,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 8))
+
+        status_var = tk.StringVar()
+        ttk.Label(form, textvariable=status_var, foreground=_DANGER).grid(
+            row=6, column=0, columnspan=2, sticky="w"
+        )
+
+        def _save() -> None:
+            app_pat = app_var.get().strip() or None
+            title_pat = title_var.get().strip() or None
+            cat = cat_box.get()
+            sub = sub_box.get() or None
+            try:
+                priority = int(priority_var.get())
+            except (ValueError, tk.TclError):
+                priority = 0
+            if not app_pat and not title_pat:
+                status_var.set("At least one pattern is required.")
+                return
+            if not cat:
+                status_var.set("Category is required.")
+                return
+            insert_rule(self._conn, app_pat, title_pat, cat, sub, priority)
+            dlg.destroy()
+
+        btn_frame = ttk.Frame(form)
+        btn_frame.grid(row=7, column=0, columnspan=2, sticky="e", pady=(4, 0))
+        ttk.Button(btn_frame, text="Save Rule", command=_save, style="Accent.TButton").pack(side="left")
+        ttk.Button(btn_frame, text="Cancel", command=dlg.destroy).pack(side="left", padx=(6, 0))
+
+        form.columnconfigure(1, weight=1)
+        dlg.update_idletasks()
+        dlg.geometry(f"+{self.winfo_rootx() + 80}+{self.winfo_rooty() + 80}")
 
     def _export_csv(self) -> None:
         path = filedialog.asksaveasfilename(

@@ -727,6 +727,12 @@ class SummaryTab(ttk.Frame):
         self._tree.tag_configure("category_row", font=("Segoe UI", 9, "bold"))
         self._tree.tag_configure("uncategorized", foreground="#9ca3af")
 
+        footer = ttk.Frame(self)
+        footer.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Label(footer, text="Total:").pack(side="left")
+        self._total_var = tk.StringVar(value="")
+        ttk.Label(footer, textvariable=self._total_var, font=("Segoe UI", 9, "bold")).pack(side="left", padx=(4, 0))
+
     def refresh(self) -> None:
         self._tree.delete(*self._tree.get_children())
         dates = get_event_dates(self._conn)
@@ -759,6 +765,9 @@ class SummaryTab(ttk.Frame):
                         "end",
                         values=("", item["sub_category"], _fmt_duration(item["total_seconds"]), item["event_count"]),
                     )
+
+        grand_total = sum(r["total_seconds"] for r in rows)
+        self._total_var.set(_fmt_duration(grand_total))
 
     def _export_csv(self) -> None:
         path = filedialog.asksaveasfilename(
@@ -886,7 +895,7 @@ class RulesTab(ttk.Frame):
             columns=self._COLS,
             show="headings",
             yscrollcommand=vsb.set,
-            selectmode="browse",
+            selectmode="extended",
         )
         vsb.config(command=self._tree.yview)
 
@@ -1020,7 +1029,7 @@ class RulesTab(ttk.Frame):
 
     def _load_rule_for_edit(self) -> None:
         sel = self._tree.selection()
-        if not sel:
+        if not sel or len(sel) != 1:
             return
         rule_id = int(sel[0])
         values = self._tree.item(sel[0], "values")
@@ -1055,13 +1064,19 @@ class RulesTab(ttk.Frame):
         self._cancel_btn.grid_remove()
 
     def _on_double_click(self, _event: tk.Event) -> None:
-        self._load_rule_for_edit()
+        if len(self._tree.selection()) == 1:
+            self._load_rule_for_edit()
 
     def _delete_rule(self) -> None:
         sel = self._tree.selection()
         if not sel:
             return
-        delete_rule(self._conn, int(sel[0]))
+        if len(sel) > 1:
+            if not messagebox.askyesno("Delete Rules", f"Delete {len(sel)} selected rules?"):
+                return
+        for iid in sel:
+            delete_rule(self._conn, int(iid))
+        self._clear_form()
         self._status_var.set("")
         self.refresh()
 

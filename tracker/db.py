@@ -47,20 +47,27 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-_MIGRATIONS = [
+# Ordered list of schema migrations. Each entry corresponds to a schema version.
+# IMPORTANT: Never edit or reorder existing entries — only append new ones.
+# The index (0-based) + 1 is the version number written to PRAGMA user_version.
+_MIGRATIONS: list[str] = [
+    # v1
     "ALTER TABLE window_events ADD COLUMN category TEXT;",
+    # v2
     "ALTER TABLE window_events ADD COLUMN sub_category TEXT;",
-]
-
-_RULE_MIGRATIONS = [
-    ("app_name_pattern", "ALTER TABLE category_rules ADD COLUMN app_name_pattern TEXT;"),
-    ("window_title_pattern", "ALTER TABLE category_rules ADD COLUMN window_title_pattern TEXT;"),
-    ("priority", "ALTER TABLE category_rules ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;"),
+    # v3
+    "ALTER TABLE category_rules ADD COLUMN app_name_pattern TEXT;",
+    # v4
+    "ALTER TABLE category_rules ADD COLUMN window_title_pattern TEXT;",
+    # v5
+    "ALTER TABLE category_rules ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;",
 ]
 
 
 def open_db(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute(SCHEMA)
     conn.execute(SCHEMA_RULES)
     conn.execute(SCHEMA_CATEGORIES)
@@ -148,28 +155,42 @@ def _seed_defaults(conn: sqlite3.Connection) -> None:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Add new columns to existing databases that pre-date the schema update."""
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(window_events)")}
-    for stmt in _MIGRATIONS:
-        col = stmt.split("ADD COLUMN")[1].split()[0]
-        if col not in existing:
-            conn.execute(stmt)
+    """Run any pending schema migrations using PRAGMA user_version for tracking."""
+    current: int = conn.execute("PRAGMA user_version").fetchone()[0]
 
-    rule_cols = {row[1] for row in conn.execute("PRAGMA table_info(category_rules)")}
-    # One-time data migration: copy old field/pattern to new split columns
-    needs_data_migration = "field" in rule_cols and "app_name_pattern" not in rule_cols
-    for col, stmt in _RULE_MIGRATIONS:
-        if col not in rule_cols:
-            conn.execute(stmt)
-    if needs_data_migration:
-        conn.execute(
-            "UPDATE category_rules SET app_name_pattern = pattern WHERE field = 'app_name'"
-        )
-        conn.execute(
-            "UPDATE category_rules SET window_title_pattern = pattern WHERE field = 'window_title'"
-        )
+    # Bootstrap: existing databases pre-date versioning — detect their current state
+    # by inspecting columns so we don't re-run already-applied migrations.
+    if current == 0:
+        we_cols = {row[1] for row in conn.execute("PRAGMA table_info(window_events)")}
+        cr_cols = {row[1] for row in conn.execute("PRAGMA table_info(category_rules)")}
+        if "priority" in cr_cols:
+            current = 5
+        elif "window_title_pattern" in cr_cols:
+            current = 4
+        elif "app_name_pattern" in cr_cols:
+            current = 3
+        elif "sub_category" in we_cols:
+            current = 2
+        elif "category" in we_cols:
+            current = 1
+        conn.execute(f"PRAGMA user_version = {current}")
+        conn.commit()
 
-    conn.commit()
+    for version, stmt in enumerate(_MIGRATIONS[current:], start=current + 1):
+        conn.execute(stmt)
+        # One-time data migration: after adding the new pattern columns, copy data
+        # from the old field/pattern columns if they existed in legacy databases.
+        if version == 4:
+            cr_cols = {row[1] for row in conn.execute("PRAGMA table_info(category_rules)")}
+            if "field" in cr_cols:
+                conn.execute(
+                    "UPDATE category_rules SET app_name_pattern = pattern WHERE field = 'app_name'"
+                )
+                conn.execute(
+                    "UPDATE category_rules SET window_title_pattern = pattern WHERE field = 'window_title'"
+                )
+        conn.execute(f"PRAGMA user_version = {version}")
+        conn.commit()
 
 
 def insert_event(conn: sqlite3.Connection, event: WindowEvent) -> int:

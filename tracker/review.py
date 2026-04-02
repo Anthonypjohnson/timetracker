@@ -31,6 +31,10 @@ from tracker.db import (
     insert_rule,
     delete_rule,
     update_rule,
+    get_category_excluded,
+    get_sub_category_excluded,
+    set_category_excluded,
+    set_sub_category_excluded,
     rename_category,
     rename_sub_category,
     update_event_category,
@@ -1112,7 +1116,7 @@ class CategoriesTab(ttk.Frame):
         self._on_data_changed = on_data_changed
         self._sel_category: str | None = None
         self._sel_sub: str | None = None
-        self._cat_data: dict[str, tuple[int, list[tuple[str, int]]]] = {}
+        self._cat_data: dict[str, tuple[int, bool, list[tuple[str, int, bool]]]] = {}
         self._build()
         self.refresh()
 
@@ -1183,9 +1187,14 @@ class CategoriesTab(ttk.Frame):
         ttk.Button(edit, text="Delete", style="Danger.TButton", command=self._delete).grid(
             row=0, column=3
         )
+        self._excluded_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            edit, text="Exclude from summary", variable=self._excluded_var,
+            command=self._toggle_excluded,
+        ).grid(row=0, column=4, padx=(12, 0))
         self._status_var = tk.StringVar()
         ttk.Label(edit, textvariable=self._status_var, foreground=_SUBTEXT).grid(
-            row=0, column=4, padx=(12, 0), sticky="w"
+            row=0, column=5, padx=(12, 0), sticky="w"
         )
         edit.columnconfigure(1, weight=1)
 
@@ -1197,39 +1206,46 @@ class CategoriesTab(ttk.Frame):
             cat_count = self._conn.execute(
                 "SELECT COUNT(*) FROM window_events WHERE category = ?", (cat,)
             ).fetchone()[0]
-            subs: list[tuple[str, int]] = []
+            cat_excluded = get_category_excluded(self._conn, cat)
+            subs: list[tuple[str, int, bool]] = []
             for sub in get_known_sub_categories(self._conn, cat):
                 sub_count = self._conn.execute(
                     "SELECT COUNT(*) FROM window_events WHERE category = ? AND sub_category = ?",
                     (cat, sub),
                 ).fetchone()[0]
-                subs.append((sub, sub_count))
-            self._cat_data[cat] = (cat_count, subs)
+                sub_excluded = get_sub_category_excluded(self._conn, cat, sub)
+                subs.append((sub, sub_count, sub_excluded))
+            self._cat_data[cat] = (cat_count, cat_excluded, subs)
         self._apply_filter()
 
     def _apply_filter(self) -> None:
         q = self._filter_var.get().lower()
         self._tree.delete(*self._tree.get_children())
-        for cat, (cat_count, subs) in self._cat_data.items():
+        self._tree.tag_configure("excluded", foreground="#9ca3af")
+        self._tree.tag_configure("category_excluded", font=("Segoe UI", 9, "bold"), foreground="#9ca3af")
+        for cat, (cat_count, cat_excluded, subs) in self._cat_data.items():
             cat_matches = not q or q in cat.lower()
-            matching_subs = [(s, c) for s, c in subs if not q or q in s.lower()]
+            matching_subs = [(s, c, e) for s, c, e in subs if not q or q in s.lower()]
             if not cat_matches and not matching_subs:
                 continue
+            cat_tags = ("category_excluded",) if cat_excluded else ("category",)
             parent = self._tree.insert(
                 "", "end",
                 iid=f"{self._CAT}{cat}",
                 text=cat,
                 values=(cat_count,),
-                tags=("category",),
+                tags=cat_tags,
                 open=True,
             )
             shown_subs = subs if cat_matches else matching_subs
-            for sub, sub_count in shown_subs:
+            for sub, sub_count, sub_excluded in shown_subs:
+                sub_tags = ("excluded",) if sub_excluded else ()
                 self._tree.insert(
                     parent, "end",
                     iid=f"{self._SUB}{cat}|||{sub}",
                     text=sub,
                     values=(sub_count,),
+                    tags=sub_tags,
                 )
 
     def _export_json(self) -> None:
@@ -1280,18 +1296,32 @@ class CategoriesTab(ttk.Frame):
         if not sel:
             self._sel_category = None
             self._sel_sub = None
+            self._excluded_var.set(False)
             return
         iid = sel[0]
         if iid.startswith(self._CAT):
             self._sel_category = iid[len(self._CAT):]
             self._sel_sub = None
             self._edit_var.set(self._sel_category)
+            self._excluded_var.set(get_category_excluded(self._conn, self._sel_category))
         elif iid.startswith(self._SUB):
             rest = iid[len(self._SUB):]
             cat, sub = rest.split("|||", 1)
             self._sel_category = cat
             self._sel_sub = sub
             self._edit_var.set(sub)
+            self._excluded_var.set(get_sub_category_excluded(self._conn, cat, sub))
+
+    def _toggle_excluded(self) -> None:
+        excluded = self._excluded_var.get()
+        if self._sel_sub is not None:
+            set_sub_category_excluded(self._conn, self._sel_category, self._sel_sub, excluded)
+        elif self._sel_category is not None:
+            set_category_excluded(self._conn, self._sel_category, excluded)
+        else:
+            return
+        self._status_var.set("")
+        self._apply_filter()
 
     def _create_category(self) -> None:
         name = self._new_cat_var.get().strip()

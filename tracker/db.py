@@ -61,6 +61,10 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE category_rules ADD COLUMN window_title_pattern TEXT;",
     # v5
     "ALTER TABLE category_rules ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;",
+    # v6
+    "ALTER TABLE categories ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0;",
+    # v7
+    "ALTER TABLE sub_categories ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0;",
 ]
 
 
@@ -346,6 +350,33 @@ def delete_sub_category(conn: sqlite3.Connection, category: str, name: str) -> N
     conn.commit()
 
 
+def get_category_excluded(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute("SELECT excluded FROM categories WHERE name = ?", (name,)).fetchone()
+    return bool(row[0]) if row else False
+
+
+def set_category_excluded(conn: sqlite3.Connection, name: str, excluded: bool) -> None:
+    conn.execute("UPDATE categories SET excluded = ? WHERE name = ?", (int(excluded), name))
+    conn.commit()
+
+
+def get_sub_category_excluded(conn: sqlite3.Connection, category: str, name: str) -> bool:
+    row = conn.execute(
+        "SELECT excluded FROM sub_categories WHERE category = ? AND name = ?", (category, name)
+    ).fetchone()
+    return bool(row[0]) if row else False
+
+
+def set_sub_category_excluded(
+    conn: sqlite3.Connection, category: str, name: str, excluded: bool
+) -> None:
+    conn.execute(
+        "UPDATE sub_categories SET excluded = ? WHERE category = ? AND name = ?",
+        (int(excluded), category, name),
+    )
+    conn.commit()
+
+
 def bulk_update_categories(
     conn: sqlite3.Connection, pending: dict[int, tuple[str | None, str | None]]
 ) -> None:
@@ -544,33 +575,31 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 
 def get_summary(conn: sqlite3.Connection, date: str | None = None) -> list[dict]:
-    if date:
-        cur = conn.execute(
-            """
-            SELECT
-                COALESCE(category, '(Uncategorized)') AS category,
-                COALESCE(sub_category, '')             AS sub_category,
-                SUM(duration_seconds)                  AS total_seconds,
-                COUNT(*)                               AS event_count
-            FROM window_events
-            WHERE DATE(started_at) = ?
-            GROUP BY category, sub_category
-            ORDER BY total_seconds DESC
-            """,
-            (date,),
+    date_clause = "AND DATE(started_at) = ?" if date else ""
+    params = (date,) if date else ()
+    cur = conn.execute(
+        f"""
+        SELECT
+            COALESCE(category, '(Uncategorized)') AS category,
+            COALESCE(sub_category, '')             AS sub_category,
+            SUM(duration_seconds)                  AS total_seconds,
+            COUNT(*)                               AS event_count
+        FROM window_events
+        WHERE NOT EXISTS (
+            SELECT 1 FROM categories
+            WHERE name = window_events.category AND excluded = 1
         )
-    else:
-        cur = conn.execute(
-            """
-            SELECT
-                COALESCE(category, '(Uncategorized)') AS category,
-                COALESCE(sub_category, '')             AS sub_category,
-                SUM(duration_seconds)                  AS total_seconds,
-                COUNT(*)                               AS event_count
-            FROM window_events
-            GROUP BY category, sub_category
-            ORDER BY total_seconds DESC
-            """
+        AND NOT EXISTS (
+            SELECT 1 FROM sub_categories
+            WHERE category = window_events.category
+            AND name = window_events.sub_category
+            AND excluded = 1
         )
+        {date_clause}
+        GROUP BY category, sub_category
+        ORDER BY total_seconds DESC
+        """,
+        params,
+    )
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, row)) for row in cur.fetchall()]

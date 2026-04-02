@@ -6,7 +6,7 @@ import csv
 import json
 import sqlite3
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timezone
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
@@ -43,6 +43,14 @@ from tracker.models import WindowEvent
 
 _SUBTEXT = "#6b7280"
 _DANGER = "#dc2626"
+
+
+def _utc_to_local(utc_str: str) -> str:
+    """Convert a stored UTC ISO8601 string to the local timezone for display."""
+    dt = datetime.fromisoformat(utc_str)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +413,7 @@ class EventsTab(ttk.Frame):
                 "end",
                 iid=str(ev["id"]),
                 values=(
-                    ev["started_at"][:19].replace("T", " "),
+                    _utc_to_local(ev["started_at"]),
                     ev["app_name"],
                     ev["window_title"],
                     _fmt_duration(ev["duration_seconds"]),

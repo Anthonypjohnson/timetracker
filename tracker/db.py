@@ -1,7 +1,15 @@
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tracker.models import WindowEvent
+
+
+def _tz_modifier() -> str:
+    """SQLite datetime modifier string for the local UTC offset, e.g. '+330 minutes'."""
+    offset = datetime.now(timezone.utc).astimezone().utcoffset()
+    minutes = int(offset.total_seconds() / 60)
+    return f"{minutes:+d} minutes"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS window_events (
@@ -226,18 +234,21 @@ def update_event_category(
 
 def get_event_dates(conn: sqlite3.Connection) -> list[str]:
     """Return distinct calendar dates (YYYY-MM-DD) that have events, newest first."""
+    tz = _tz_modifier()
     cur = conn.execute(
-        "SELECT DISTINCT DATE(started_at) AS d FROM window_events ORDER BY d DESC"
+        "SELECT DISTINCT DATE(datetime(started_at, ?)) AS d FROM window_events ORDER BY d DESC",
+        (tz,),
     )
     return [row[0] for row in cur.fetchall()]
 
 
 def get_all_events(conn: sqlite3.Connection, date: str | None = None) -> list[dict]:
+    tz = _tz_modifier()
     if date:
         cur = conn.execute(
             "SELECT id, app_name, window_title, started_at, duration_seconds, category, sub_category "
-            "FROM window_events WHERE DATE(started_at) = ? ORDER BY started_at DESC",
-            (date,),
+            "FROM window_events WHERE DATE(datetime(started_at, ?)) = ? ORDER BY started_at DESC",
+            (tz, date),
         )
     else:
         cur = conn.execute(
@@ -575,8 +586,9 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 
 def get_summary(conn: sqlite3.Connection, date: str | None = None) -> list[dict]:
-    date_clause = "AND DATE(started_at) = ?" if date else ""
-    params = (date,) if date else ()
+    tz = _tz_modifier()
+    date_clause = "AND DATE(datetime(started_at, ?)) = ?" if date else ""
+    params = (tz, date) if date else ()
     cur = conn.execute(
         f"""
         SELECT
